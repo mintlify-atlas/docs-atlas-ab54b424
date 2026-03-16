@@ -1,0 +1,99 @@
+{
+  "projectType": "saas",
+  "projectName": "HealthIA",
+  "projectDescription": "A full-stack AI symptom triage assistant that combines NLP and machine learning to suggest probable conditions based on free-text symptom descriptions and optional patient context.",
+  "theme": "almond",
+  "primaryColor": "#2E86AB",
+  "lightColor": "#E8F4F8",
+  "darkColor": "#1A5276",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart"]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/symptom-analysis",
+              "features/patient-context",
+              "features/differential-suggestions",
+              "features/explainability",
+              "features/history"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/backend",
+              "architecture/frontend",
+              "architecture/ml-pipeline"
+            ]
+          },
+          {
+            "group": "Local Development",
+            "pages": [
+              "development/setup",
+              "development/backend",
+              "development/frontend",
+              "development/training"
+            ]
+          },
+          {
+            "group": "Safety & Privacy",
+            "pages": [
+              "safety/disclaimer",
+              "safety/privacy"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": ["api/overview"]
+          },
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/predict-get",
+              "api/predict-post"
+            ]
+          },
+          {
+            "group": "Data Models",
+            "pages": [
+              "api/patient-context",
+              "api/prediction-result"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Free-text symptom analysis in Portuguese clinical language using NLP preprocessing",
+    "Optional patient context (age, sex, pregnancy, comorbidities, medications) for context-aware predictions",
+    "Top-N differential condition suggestions with confidence scores",
+    "Explainability output showing why the top condition was suggested",
+    "Local history storage — no personal data stored server-side",
+    "Emergency condition detection with urgent-care warnings",
+    "TF-IDF + XGBoost ML pipeline with modular retraining support",
+    "React/TypeScript SaaS-style frontend with collapsible patient context panel"
+  ],
+  "publicApiSurface": [
+    "GET /predict/ — Query-param based symptom prediction endpoint",
+    "POST /predict/ — JSON body symptom prediction with structured PatientContext",
+    "GET / — API health/welcome endpoint",
+    "PatientContext model (age, sex, pregnant, comorbidities, medications, recent_conditions, recent_surgeries, lifestyle_notes)",
+    "PredictionRequest model (sintomas, top_n, patient_context)",
+    "PredictionResult (input_text, normalized_text, top_predictions, warning, disclaimer, patient_context, top_diagnosis_explanation)",
+    "HealthIAPredictor.predict(text, top_n, patient_context) — core ML inference class"
+  ]
+}
