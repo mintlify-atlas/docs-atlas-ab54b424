@@ -1,0 +1,164 @@
+---
+title: "PredictionResult model"
+description: "The response object returned by all prediction endpoints."
+---
+
+Both `GET /predict/` and `POST /predict/` return the same `PredictionResult` envelope. The schema is described below.
+
+## Response fields
+
+<ResponseField name="input_text" type="string" required>
+  The original symptom text exactly as received by the API, after stripping leading and trailing whitespace.
+</ResponseField>
+
+<ResponseField name="normalized_text" type="string" required>
+  The preprocessed and normalised version of the full model input (symptom text plus any composed context segments). This is the string that was vectorised by the ML pipeline. Useful for debugging and understanding what the model actually received.
+</ResponseField>
+
+<ResponseField name="top_predictions" type="object[]" required>
+  Ordered list of predicted conditions, from highest to lowest confidence. The list contains at most `top_n` items (1–5). The list is **empty** when the model returns a low-confidence result.
+
+  <Expandable title="top_predictions item properties">
+    <ResponseField name="disease" type="string" required>
+      The condition slug from the disease catalog (e.g. `meningite_bacteriana`, `diabetes_tipo_2`). Underscores represent spaces in the human-readable name.
+    </ResponseField>
+    <ResponseField name="confidence" type="number" required>
+      Predicted probability for this condition, rounded to 4 decimal places. Range: `0.0`–`1.0`.
+    </ResponseField>
+    <ResponseField name="domain" type="string | null" required>
+      Medical domain of the condition as defined in the disease catalog (e.g. `neurologia`, `cardiologia`, `pneumologia`). `null` if the slug is not present in the catalog.
+    </ResponseField>
+    <ResponseField name="severity" type="string | null" required>
+      Severity indicator from the disease catalog (e.g. `leve`, `moderado`, `grave`). `null` if not defined in the catalog.
+    </ResponseField>
+    <ResponseField name="is_emergency" type="boolean | null" required>
+      Whether the condition is flagged as a medical emergency in the disease catalog. `null` if not defined in the catalog.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="warning" type="string | null" required>
+  A warning message, or `null` when no warning applies. Two warning states are possible:
+
+  - **Low confidence:** `"Informações insuficientes para sugestão confiável"` — emitted when the top prediction confidence is below `0.18`, when the input produces fewer than 2 non-zero features, or when the input is not meaningful. In this case `top_predictions` is also set to `[]`.
+  - **Emergency:** `"Foram encontradas hipóteses potencialmente urgentes. Procure avaliação profissional imediata se houver piora clínica."` — emitted when the top prediction has `is_emergency: true` and `confidence >= 0.60`.
+</ResponseField>
+
+<ResponseField name="disclaimer" type="string" required>
+  Always present. Fixed educational disclaimer text:
+
+  > "Projeto educacional. Esta ferramenta sugere hipóteses de estudo e não substitui avaliação médica profissional."
+
+  This field must be surfaced to end users in any interface that displays prediction results.
+</ResponseField>
+
+<ResponseField name="patient_context" type="object | null" required>
+  The patient context echoed back after internal normalisation and deduplication, or `null` if no context was provided or the provided context was effectively empty. Fields with `null` values, empty arrays, and `sex: "unknown"` are omitted from the echoed object.
+
+  <Expandable title="patient_context properties">
+    <ResponseField name="age" type="integer">
+      Patient age in years, as provided.
+    </ResponseField>
+    <ResponseField name="sex" type="string">
+      Biological sex. Only present if the value was `male`, `female`, or `other`.
+    </ResponseField>
+    <ResponseField name="pregnant" type="boolean">
+      Pregnancy status, as provided.
+    </ResponseField>
+    <ResponseField name="comorbidities" type="string[]">
+      Deduplicated list of comorbidities.
+    </ResponseField>
+    <ResponseField name="medications" type="string[]">
+      Deduplicated list of medications.
+    </ResponseField>
+    <ResponseField name="recent_conditions" type="string[]">
+      Deduplicated list of recent conditions.
+    </ResponseField>
+    <ResponseField name="recent_surgeries" type="boolean">
+      Recent surgery indicator, as provided.
+    </ResponseField>
+    <ResponseField name="lifestyle_notes" type="string">
+      Lifestyle notes, trimmed of whitespace.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="top_diagnosis_explanation" type="string | null" required>
+  A human-readable Portuguese-language explanation for the top prediction, built from symptom evidence and patient context clues matched against the disease catalog. `null` when `top_predictions` is empty.
+
+  Example value: `"Sugerido pela presença de febre alta e rigidez na nuca, padrão frequentemente associado a meningite bacteriana."`
+</ResponseField>
+
+## Full example response
+
+```json
+{
+  "input_text": "febre alta, dor de cabeça intensa e rigidez na nuca",
+  "normalized_text": "febr alt dor cabec intens rigidez nuca context pacient idad 28 anos faixa adulto sex feminin comorbidad asthm diabet",
+  "top_predictions": [
+    {
+      "disease": "meningite_bacteriana",
+      "confidence": 0.7821,
+      "domain": "neurologia",
+      "severity": "grave",
+      "is_emergency": true
+    },
+    {
+      "disease": "meningite_viral",
+      "confidence": 0.1034,
+      "domain": "neurologia",
+      "severity": "moderado",
+      "is_emergency": false
+    },
+    {
+      "disease": "enxaqueca",
+      "confidence": 0.0612,
+      "domain": "neurologia",
+      "severity": "leve",
+      "is_emergency": false
+    },
+    {
+      "disease": "hipertensao_intracraniana",
+      "confidence": 0.0318,
+      "domain": "neurologia",
+      "severity": "grave",
+      "is_emergency": true
+    },
+    {
+      "disease": "cefaleia_tensional",
+      "confidence": 0.0215,
+      "domain": "neurologia",
+      "severity": "leve",
+      "is_emergency": false
+    }
+  ],
+  "warning": "Foram encontradas hipóteses potencialmente urgentes. Procure avaliação profissional imediata se houver piora clínica.",
+  "disclaimer": "Projeto educacional. Esta ferramenta sugere hipóteses de estudo e não substitui avaliação médica profissional.",
+  "patient_context": {
+    "age": 28,
+    "sex": "female",
+    "comorbidities": ["asthma", "diabetes"]
+  },
+  "top_diagnosis_explanation": "Sugerido pela presença de febre alta e rigidez na nuca, padrão frequentemente associado a meningite bacteriana."
+}
+```
+
+## Low-confidence response example
+
+When the model cannot produce a reliable prediction, `top_predictions` is empty and `warning` is set.
+
+```json
+{
+  "input_text": "estou me sentindo mal",
+  "normalized_text": "est sent mal",
+  "top_predictions": [],
+  "warning": "Informações insuficientes para sugestão confiável",
+  "disclaimer": "Projeto educacional. Esta ferramenta sugere hipóteses de estudo e não substitui avaliação médica profissional.",
+  "patient_context": null,
+  "top_diagnosis_explanation": null
+}
+```
+
+<Warning>
+Never suppress or omit the `disclaimer` field in any user-facing interface. The API always returns it precisely because the results are educational estimates, not medical diagnoses.
+</Warning>

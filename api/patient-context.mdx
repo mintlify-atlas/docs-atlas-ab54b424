@@ -1,0 +1,135 @@
+---
+title: "PatientContext model"
+description: "The optional patient context object that improves prediction accuracy."
+---
+
+`PatientContextPayload` is the optional request object used to supply clinical background about the patient. When provided, the predictor uses this data to augment the symptom text before it is passed to the ML pipeline, improving the relevance of predictions.
+
+<Note>
+All fields are optional. Supplying partial context is valid — only the fields you provide will influence the model input.
+</Note>
+
+## Fields
+
+<ParamField body="age" type="integer">
+  Patient age in years. Must be between 0 and 120 (inclusive).
+
+  When provided, two tokens are appended to the model input:
+  - `idade {age} anos` — the exact age
+  - `faixa {bucket}` — the age group bucket (see [Age buckets](#age-buckets) below)
+</ParamField>
+
+<ParamField body="sex" type="string">
+  Biological sex. Accepted values: `male`, `female`, `other`, `unknown`.
+
+  The value `unknown` is functionally equivalent to omitting the field — it is stripped by the predictor and will not be included in the model input or echoed back in the response.
+
+  | Value | Token appended to model input |
+  |-------|-------------------------------|
+  | `male` | `sexo masculino` |
+  | `female` | `sexo feminino` |
+  | `other` | `sexo outro` |
+  | `unknown` | *(nothing)* |
+</ParamField>
+
+<ParamField body="pregnant" type="boolean">
+  Whether the patient is currently pregnant.
+
+  | Value | Token appended to model input |
+  |-------|-------------------------------|
+  | `true` | `gestante gravidez atual` |
+  | `false` | `nao gestante` |
+  | `null` | *(nothing)* |
+</ParamField>
+
+<ParamField body="comorbidities" type="string[]">
+  List of known comorbidities (e.g. `["diabetes", "hypertension"]`).
+
+  Items are deduplicated case-insensitively and blank strings are discarded. When non-empty, the joined list is appended as `comorbidades {item1} {item2} ...`.
+</ParamField>
+
+<ParamField body="medications" type="string[]">
+  List of medications currently in use (e.g. `["metformin", "lisinopril"]`).
+
+  Subject to the same deduplication as `comorbidities`. Appended as `medicacoes em uso {item1} {item2} ...`.
+</ParamField>
+
+<ParamField body="recent_conditions" type="string[]">
+  List of recent conditions or diagnoses (e.g. `["covid-19", "pneumonia"]`).
+
+  Subject to the same deduplication. Appended as `condicoes recentes {item1} {item2} ...`.
+</ParamField>
+
+<ParamField body="recent_surgeries" type="boolean">
+  Whether the patient has had a recent surgery or recent treatment.
+
+  | Value | Token appended to model input |
+  |-------|-------------------------------|
+  | `true` | `cirurgia recente tratamento recente` |
+  | `false` / `null` | *(nothing)* |
+</ParamField>
+
+<ParamField body="lifestyle_notes" type="string">
+  Free-text description of lifestyle factors relevant to the clinical picture (e.g. `"smoker, sedentary lifestyle"`). Appended as `estilo de vida {notes}`.
+</ParamField>
+
+## Age buckets
+
+When `age` is provided, the predictor maps it to one of four named buckets and appends `faixa {bucket}` to the model input.
+
+| Age range | Bucket label |
+|-----------|--------------|
+| 0–11 | `crianca` |
+| 12–17 | `adolescente` |
+| 18–59 | `adulto` |
+| 60+ | `idoso` |
+
+## How context affects model input
+
+Before inference, the predictor calls `_compose_model_input`, which concatenates the symptom text and context segments into a single string:
+
+```
+{sintomas}. contexto paciente {segment1}. {segment2}. ...
+```
+
+For example, given `sintomas = "febre e tosse"`, `age = 7`, and `sex = "male"`, the composed input becomes:
+
+```
+febre e tosse. contexto paciente idade 7 anos. faixa crianca. sexo masculino
+```
+
+This composed string is then normalised and vectorised by the ML pipeline.
+
+## When context is treated as empty
+
+The predictor evaluates whether a `PatientContext` object is effectively empty using `is_empty()`. A context is considered empty when **all** of the following are true:
+
+- `age` is `null`
+- `sex` is `null`, `""`, or `"unknown"`
+- `pregnant` is `null`
+- `comorbidities` is `null` or an empty list
+- `medications` is `null` or an empty list
+- `recent_conditions` is `null` or an empty list
+- `recent_surgeries` is `null`
+- `lifestyle_notes` is `null`, empty, or whitespace-only
+
+When the context is empty, the predictor behaves as if no context was provided, and `patient_context` in the response is `null`.
+
+## Full JSON example
+
+```json
+{
+  "sintomas": "dor abdominal, náusea e febre",
+  "top_n": 5,
+  "patient_context": {
+    "age": 32,
+    "sex": "female",
+    "pregnant": true,
+    "comorbidities": ["anemia"],
+    "medications": ["ferrous sulfate"],
+    "recent_conditions": ["urinary tract infection"],
+    "recent_surgeries": false,
+    "lifestyle_notes": "non-smoker, low physical activity"
+  }
+}
+```

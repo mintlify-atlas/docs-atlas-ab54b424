@@ -1,0 +1,321 @@
+---
+title: 'ML pipeline'
+description: 'The TF-IDF + classification pipeline, model training, inference, and dataset generation.'
+---
+
+HealthIA uses a classical ML pipeline built with **Scikit-learn**. The pipeline normalizes Portuguese clinical text, extracts TF-IDF features at both word and character levels, selects the most discriminative features with chi-squared scoring, and classifies with Logistic Regression. The trained artifact is serialized to disk with **joblib** and loaded once at server startup.
+
+## Configuration
+
+All paths and inference thresholds are defined in `src/config.py`:
+
+```python src/config.py
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR   = BASE_DIR / "data"
+MODELS_DIR = BASE_DIR / "models"
+
+DISEASE_CATALOG_PATH   = DATA_DIR   / "disease_catalog.json"
+DATASET_PATH           = DATA_DIR   / "symptom_cases.csv"
+MODEL_PATH             = MODELS_DIR / "healthia_pipeline.joblib"
+METRICS_PATH           = MODELS_DIR / "evaluation_metrics.json"
+TRAINING_SUMMARY_PATH  = MODELS_DIR / "training_summary.md"
+
+DEFAULT_TOP_N          = 5
+MIN_CONFIDENCE         = 0.18
+MIN_NONZERO_FEATURES   = 2
+```
+
+<Info>
+`MIN_CONFIDENCE` and `MIN_NONZERO_FEATURES` are the two gates an inference result must pass before predictions are returned to the caller. If either threshold fails, the response contains an empty `top_predictions` list and a low-confidence warning.
+</Info>
+
+## Pipeline components
+
+The pipeline is constructed in `src/training/train.py`:
+
+```python src/training/train.py
+def build_pipeline() -> Pipeline:
+    word_features = TfidfVectorizer(
+        ngram_range=(1, 2),
+        min_df=2,
+        max_df=0.92,
+        sublinear_tf=True,
+        strip_accents="unicode",
+    )
+    char_features = TfidfVectorizer(
+        analyzer="char_wb",
+        ngram_range=(3, 5),
+        min_df=2,
+        sublinear_tf=True,
+        strip_accents="unicode",
+    )
+
+    return Pipeline(steps=[
+        ("normalize",   SymptomTextPreprocessor()),
+        ("features",    FeatureUnion([
+                            ("word_tfidf", word_features),
+                            ("char_tfidf", char_features),
+                        ])),
+        ("select",      SelectKBest(score_func=chi2, k=1500)),
+        ("classifier",  LogisticRegression(
+                            max_iter=2000,
+                            solver="lbfgs",
+                            class_weight="balanced",
+                        )),
+    ])
+```
+
+| Step | Class | Purpose |
+|------|-------|---------|
+| `normalize` | `SymptomTextPreprocessor` | Strips accents, expands abbreviations, normalizes phrases, handles negations, applies light Portuguese stemming. |
+| `features` | `FeatureUnion` | Combines word-level unigram/bigram TF-IDF with character n-gram (3–5) TF-IDF into a single sparse matrix. |
+| `select` | `SelectKBest(chi2, k=1500)` | Retains the 1 500 most class-discriminative features, reducing dimensionality and noise. |
+| `classifier` | `LogisticRegression` | Multi-class classifier with balanced class weights to compensate for any per-disease sample imbalance. |
+
+## Text normalization
+
+`SymptomTextPreprocessor` (in `src/preprocessing/text.py`) is a Scikit-learn `TransformerMixin`. Its `normalize_text` method applies these steps in order:
+
+<Steps>
+  <Step title="Strip accents and lowercase">
+    Unicode NFKD decomposition removes diacritics; the entire string is lowercased.
+  </Step>
+  <Step title="Phrase normalization">
+    Multi-word expressions are replaced by canonical tokens before tokenization. For example, `"dor de cabeça"` → `"dor_cabeca"`, `"falta de ar"` → `"falta_ar"`.
+  </Step>
+  <Step title="Tokenize">
+    Tokens are extracted with `re.findall(r"[a-z_]{2,}", text)` — only alphabetic sequences and underscore-joined tokens are kept.
+  </Step>
+  <Step title="Negation handling">
+    Tokens immediately following a negation cue (`nao`, `nem`, `sem`) are prefixed with `neg_`. For example, `"sem febre"` → `"neg_febre"`.
+  </Step>
+  <Step title="Abbreviation expansion">
+    Clinical abbreviations are resolved: `"dm"` → `"diabetes"`, `"has"` → `"hipertensao"`, `"dispneia"` → `"falta_ar"`.
+  </Step>
+  <Step title="Token normalization and stemming">
+    Morphological variants are collapsed: `"vomitos"`, `"vomitando"`, `"vomitar"` → `"vomito"`. A light suffix-stripping stemmer then reduces remaining tokens.
+  </Step>
+  <Step title="Stopword removal">
+    Portuguese stopwords and meaningless test tokens (`"teste"`, `"asdf"`, etc.) are discarded.
+  </Step>
+</Steps>
+
+## Disease catalog
+
+The disease catalog (`data/disease_catalog.json`) drives both dataset generation and inference enrichment. Each entry has the following structure:
+
+```json
+{
+  "slug": "gripe",
+  "domain": "respiratorio",
+  "severity": "leve",
+  "is_emergency": false,
+  "core_symptoms": ["febre", "dor no corpo", "tosse", "fadiga"],
+  "supporting_symptoms": ["coriza", "dor de garganta", "calafrios"],
+  "context_clues": ["contato com pessoa doente", "época de gripe"],
+  "exclude_symptoms": ["falta de ar intensa"],
+  "openers": ["Estou com", "Sinto", "Tenho"]
+}
+```
+
+| Field | Used by |
+|-------|---------|
+| `slug` | Label identifier throughout the system. |
+| `domain` | Appended to prediction results for UI display. |
+| `severity` | Appended to prediction results for UI display. |
+| `is_emergency` | Triggers urgent warning when top prediction confidence ≥ 0.6. |
+| `core_symptoms` | Sampled 2–4 times per generated training case; matched during explanation. |
+| `supporting_symptoms` | Sampled 1–3 times per generated training case; matched during explanation. |
+| `context_clues` | Optionally injected into 35% of generated cases; matched during explanation. |
+| `exclude_symptoms` | Injected as negated symptoms in 20% of generated cases. |
+| `openers` | Random sentence openers for natural-language variation in training data. |
+
+## Dataset generation
+
+Training data is synthesized from the disease catalog by `src/training/dataset_generator.py`. For each disease, 60 unique symptom descriptions are generated by randomly sampling symptoms, connectors, intensifiers, and time expressions:
+
+```python src/training/dataset_generator.py
+def _render_case(disease, rng, case_index):
+    primary   = _sample_unique(disease["core_symptoms"], 2, 4, rng)
+    secondary = _sample_unique(disease["supporting_symptoms"], 1, 3, rng)
+    symptom_pool = primary + secondary
+    rng.shuffle(symptom_pool)
+
+    intro     = rng.choice(disease["openers"])
+    connector = rng.choice(CONNECTORS)   # e.g. "e", "além disso"
+    duration  = rng.choice(TIME_EXPRESSIONS)
+    intensity = rng.choice(INTENSIFIERS)
+
+    # 35% chance: inject a context clue
+    # 20% chance: inject a negated exclude symptom
+    ...
+```
+
+The resulting CSV (`data/symptom_cases.csv`) has the following columns:
+
+| Column | Description |
+|--------|-------------|
+| `case_id` | `{slug}-{index:04d}` |
+| `split_group` | Disease slug, used for stratified splitting. |
+| `disease` | Target label (slug). |
+| `domain` | Medical domain. |
+| `severity` | Severity level. |
+| `is_emergency` | Boolean emergency flag. |
+| `age_group` | Randomly assigned: `adulto`, `idoso`, `adolescente`. |
+| `sex_profile` | Randomly assigned: `indiferente`, `masculino`, `feminino`. |
+| `symptoms_text` | Generated free-text symptom description. |
+
+## `HealthIAPredictor`
+
+`src/inference/predictor.py` exposes the `HealthIAPredictor` class. It is instantiated once when `sintomasAPI.py` is imported.
+
+### Lifecycle
+
+```python src/inference/predictor.py
+class HealthIAPredictor:
+    def __init__(self, model_path=MODEL_PATH) -> None:
+        if not model_path.exists():
+            from src.training.train import train_and_save_model
+            train_and_save_model(force_regenerate_dataset=True)
+
+        artifact = joblib.load(model_path)
+        self.pipeline      = artifact["pipeline"]
+        self.label_encoder = artifact["label_encoder"]
+        self.normalizer    = SymptomTextPreprocessor()
+        self.catalog_by_slug = {item["slug"]: item for item in load_catalog()}
+```
+
+If `healthia_pipeline.joblib` does not exist, the predictor triggers a full training run — including dataset regeneration — before loading. This means a cold-start deployment requires no manual setup step.
+
+### Context augmentation
+
+`_compose_model_input` appends patient context as natural-language tokens to the symptom text before inference. No model retraining is needed:
+
+```python src/inference/predictor.py
+def _compose_model_input(self, text, patient_context):
+    if not patient_context:
+        return text
+
+    segments = []
+    if patient_context.age is not None:
+        segments.append(f"idade {patient_context.age} anos")
+        segments.append(f"faixa {self._age_bucket(patient_context.age)}")
+    # sex, pregnant, comorbidities, medications,
+    # recent_conditions, recent_surgeries, lifestyle_notes ...
+
+    context_text = ". ".join(segment for segment in segments if segment)
+    return text if not context_text else f"{text}. contexto paciente {context_text}"
+```
+
+Age is further bucketed (`crianca` under 12, `adolescente` 12–17, `adulto` 18–59, `idoso` 60+) so the model sees a stable vocabulary token regardless of exact age.
+
+### Inference thresholds
+
+After `predict_proba` runs, two filters are applied:
+
+```python src/inference/predictor.py
+if (
+    not predictions
+    or predictions[0]["confidence"] < MIN_CONFIDENCE
+    or nonzero_features < MIN_NONZERO_FEATURES
+):
+    warning = LOW_CONFIDENCE_MESSAGE
+    predictions = []
+```
+
+| Threshold | Value | Meaning |
+|-----------|-------|---------|
+| `MIN_CONFIDENCE` | `0.18` | The top prediction must reach at least 18% probability. Below this the input is considered insufficiently specific. |
+| `MIN_NONZERO_FEATURES` | `2` | At least 2 vocabulary features must match in the TF-IDF representation. This catches gibberish or single-word inputs. |
+
+A separate emergency warning is issued when the top prediction is flagged `is_emergency` and its confidence is ≥ 0.6.
+
+### Explanation generation
+
+For valid results, `_build_top_explanation` produces a human-readable sentence in Portuguese by matching normalized input tokens against the disease catalog's `core_symptoms` and `supporting_symptoms`, and by checking patient context fields against `context_clues`:
+
+```python src/inference/predictor.py
+def _build_top_explanation(self, disease_slug, cleaned_input, patient_context):
+    metadata       = self.catalog_by_slug.get(disease_slug, {})
+    input_tokens   = set(self.normalizer.normalize_text(cleaned_input).split())
+    symptom_evidence = self._matched_terms(input_tokens, core + supporting)[:3]
+    context_evidence = self._context_evidence(patient_context, metadata)[:2]
+    # assembles e.g.:
+    # "Sugerido pela presença de febre e dor no corpo,
+    #  considerando a faixa etária informada (34 anos),
+    #  padrão frequentemente associado a gripe."
+```
+
+## Training loop
+
+`train_and_save_model` in `src/training/train.py` orchestrates the full training run:
+
+<Steps>
+  <Step title="Generate or load dataset">
+    If `force_regenerate_dataset=True` or `symptom_cases.csv` does not exist, `save_dataset()` is called to regenerate it from the catalog.
+  </Step>
+  <Step title="Encode labels">
+    `LabelEncoder` converts disease slugs to integer class indices. The encoder is stored in the artifact alongside the pipeline.
+  </Step>
+  <Step title="Train/test split">
+    80/20 stratified split with `random_state=42`, stratified by class label.
+  </Step>
+  <Step title="Fit and evaluate">
+    The pipeline is fitted on the training split. `evaluate_pipeline` computes accuracy, macro precision/recall/F1, top-1 mean confidence, and runs 5-fold stratified cross-validation.
+  </Step>
+  <Step title="Serialize artifact">
+    The artifact dict `{pipeline, label_encoder, class_names}` is written to `models/healthia_pipeline.joblib` with `joblib.dump`.
+  </Step>
+  <Step title="Save metrics">
+    Evaluation metrics are written to `models/evaluation_metrics.json`. A Markdown summary is written to `models/training_summary.md`.
+  </Step>
+</Steps>
+
+## Model serialization
+
+The joblib artifact bundles three objects:
+
+```python
+{
+    "pipeline":      <sklearn.pipeline.Pipeline>,
+    "label_encoder": <sklearn.preprocessing.LabelEncoder>,
+    "class_names":   ["dengue", "gripe", ...],   # list[str]
+}
+```
+
+At inference time, `HealthIAPredictor` loads this artifact once and holds it in memory for the lifetime of the server process.
+
+## Evaluation metrics
+
+After each training run, `models/evaluation_metrics.json` is updated with:
+
+| Metric | Description |
+|--------|-------------|
+| `accuracy` | Overall accuracy on the held-out test split. |
+| `precision_macro` | Macro-averaged precision across all classes. |
+| `recall_macro` | Macro-averaged recall across all classes. |
+| `f1_macro` | Macro-averaged F1 score. |
+| `cv_accuracy_mean` | Mean accuracy across 5-fold cross-validation. |
+| `cv_accuracy_std` | Standard deviation of CV accuracy. |
+| `cv_f1_macro_mean` | Mean macro F1 across 5-fold cross-validation. |
+| `top1_mean_confidence` | Mean probability of the top predicted class on the test set. |
+| `classification_report` | Per-class precision, recall, and F1. |
+| `confusion_matrix` | Full confusion matrix as a nested list. |
+
+Metrics can be read programmatically via `src/evaluation/report.py`:
+
+```python src/evaluation/report.py
+from src.evaluation.report import format_metrics_summary
+
+print(format_metrics_summary())
+# Accuracy: 0.9312
+# Macro F1: 0.9301
+# ...
+```
+
+To retrain manually:
+
+```bash
+cd HEALTHIA
+python -m src.training.train
+```

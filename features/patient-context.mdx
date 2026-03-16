@@ -1,0 +1,144 @@
+---
+title: "Patient context"
+description: "Use optional patient data to improve prediction accuracy and relevance."
+---
+
+Patient context is entirely optional. HealthIA works without it, but providing demographic and clinical details lets the model weight predictions toward conditions more likely for your specific situation.
+
+<Note>
+  The context panel displays the message: *"O contexto é usado apenas para qualificar a triagem educacional. Não substitui avaliação médica e não é obrigatório."* (Context is used only to qualify educational triage. It does not replace medical evaluation and is not required.)
+</Note>
+
+## How context improves predictions
+
+When patient context is provided, the backend appends a structured natural-language summary to the symptom text **before** running TF-IDF feature extraction. This is handled by `_compose_model_input` in `HealthIAPredictor`:
+
+```python predictor.py
+def _compose_model_input(self, text: str, patient_context: PatientContext | None) -> str:
+    if not patient_context:
+        return text
+
+    segments: list[str] = []
+    if patient_context.age is not None:
+        segments.append(f"idade {patient_context.age} anos")
+        segments.append(f"faixa {self._age_bucket(patient_context.age)}")
+    # sex, pregnancy, comorbidities, medications, recent conditions,
+    # recent surgeries, and lifestyle notes are each appended as segments
+    ...
+    context_text = ". ".join(segment for segment in segments if segment).strip()
+    return text if not context_text else f"{text}. contexto paciente {context_text}"
+```
+
+The final model input looks like:
+
+```text
+"febre dor de cabeca. contexto paciente idade 34 anos faixa adulto sexo feminino gestante gravidez atual comorbidades diabetes"
+```
+
+This single string is then normalized by `SymptomTextPreprocessor` and passed to the ML pipeline, so context tokens contribute to TF-IDF feature matching in the same way symptom tokens do.
+
+## Age buckets
+
+Age is translated into a textual bucket appended alongside the raw age value:
+
+| Age range | Bucket token |
+|---|---|
+| 0–11 years | `crianca` |
+| 12–17 years | `adolescente` |
+| 18–59 years | `adulto` |
+| 60+ years | `idoso` |
+
+```python predictor.py
+def _age_bucket(self, age: int) -> str:
+    if age < 12:
+        return "crianca"
+    if age < 18:
+        return "adolescente"
+    if age < 60:
+        return "adulto"
+    return "idoso"
+```
+
+Both `"idade 34 anos"` and `"faixa adulto"` are appended, giving the model two overlapping signals: the exact numeric age and the categorical bucket.
+
+## Context fields
+
+All fields are optional. The Pydantic model `PatientContextPayload` (in `api/sintomasAPI.py`) validates the payload before it is passed to the predictor.
+
+<ParamField body="age" type="integer">
+  Patient age in years. Must be between 0 and 120. Used to append both the raw age (`"idade 34 anos"`) and an age-bucket token (`"faixa adulto"`) to the model input.
+</ParamField>
+
+<ParamField body="sex" type="string">
+  Biological sex. Accepted values: `"male"`, `"female"`, `"other"`, `"unknown"`. `"unknown"` is treated as omitted — it is not appended to the model input. The UI offers "Não informar" as the default selection.
+</ParamField>
+
+<ParamField body="pregnant" type="boolean">
+  Whether the patient is currently pregnant. When `true`, appends `"gestante gravidez atual"`. When `false`, appends `"nao gestante"`. Omitting this field (or setting it to `null`) adds nothing.
+</ParamField>
+
+<ParamField body="comorbidities" type="string[]">
+  List of existing conditions (e.g., `["diabetes", "hipertensão"]`). Values are deduplicated, stripped of leading/trailing whitespace, and joined into `"comorbidades diabetes hipertensao"`.
+</ParamField>
+
+<ParamField body="medications" type="string[]">
+  List of medications currently in use (e.g., `["metformina", "losartana"]`). Appended as `"medicacoes em uso metformina losartana"`.
+</ParamField>
+
+<ParamField body="recent_conditions" type="string[]">
+  Recent illnesses or conditions (e.g., `["virose recente", "infecção respiratória recente"]`). Appended as `"condicoes recentes ..."`. Also used by the explainability engine to match against `context_clues` in the disease catalog.
+</ParamField>
+
+<ParamField body="recent_surgeries" type="boolean">
+  Whether the patient has had a recent surgery or medical treatment. When `true`, appends `"cirurgia recente tratamento recente"`.
+</ParamField>
+
+<ParamField body="lifestyle_notes" type="string">
+  Free-text lifestyle notes (e.g., `"tabagismo, atividade física intensa, viagem recente"`). Appended as `"estilo de vida ..."`.
+</ParamField>
+
+## JSON example
+
+```json PatientContextPayload
+{
+  "age": 34,
+  "sex": "female",
+  "pregnant": true,
+  "comorbidities": ["diabetes"],
+  "medications": ["metformina"],
+  "recent_conditions": ["virose recente"],
+  "recent_surgeries": false,
+  "lifestyle_notes": "atividade física intensa"
+}
+```
+
+The context above would produce the following segment appended to the symptom text:
+
+```text
+contexto paciente idade 34 anos. faixa adulto. sexo feminino. gestante gravidez atual. 
+comorbidades diabetes. medicacoes em uso metformina. condicoes recentes virose recente. 
+nao gestante (recent_surgeries=false is omitted). estilo de vida atividade fisica intensa
+```
+
+<Note>
+  `recent_surgeries: false` appends `"nao gestante"` for pregnancy when false, but for `recent_surgeries`, a `false` value results in no appended token. Only `true` appends `"cirurgia recente tratamento recente"`.
+</Note>
+
+## The PatientContextPanel UI component
+
+In the frontend, patient context is entered through `PatientContextPanel` (`frontend/src/components/PatientContextPanel.tsx`). Key behaviors:
+
+- **Collapsible** — the panel uses an HTML `<details>` element and is collapsed by default. It auto-opens when any field already has a value (e.g., when a history item is replayed).
+- **Summary badges** — the collapsed header shows a row of badges summarizing filled fields: age, sex, pregnancy status, and recent surgery.
+- **List fields** — comorbidities, medications, recent conditions, and lifestyle notes each use a `<textarea>`. Values are parsed as comma-separated lists before being sent to the API.
+- **Sex and pregnancy selects** — both default to `"Não informar"` / `"unknown"`, which is stripped before sending to the backend.
+
+## GET endpoint usage
+
+When calling the `GET /predict/` endpoint, list fields (`comorbidities`, `medications`, `recent_conditions`) are passed as comma-separated query parameter strings:
+
+```bash cURL
+curl "http://localhost:8000/predict/?sintomas=febre+dor+de+cabeca&age=34&sex=female&pregnant=true&comorbidities=diabetes,hipertensao"
+```
+
+The backend parses these strings with `_parse_csv_field` before constructing the `PatientContext` object.

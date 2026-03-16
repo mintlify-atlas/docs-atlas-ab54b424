@@ -1,0 +1,108 @@
+---
+title: "Frontend development"
+description: "Running and developing the React/TypeScript frontend locally."
+---
+
+## Setup
+
+<Steps>
+  <Step title="Navigate to the frontend directory">
+    ```bash
+    cd frontend
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    ```bash
+    npm install
+    ```
+
+    This installs React 18, TypeScript, Vite, Tailwind CSS, and the supporting toolchain defined in `package.json`.
+  </Step>
+
+  <Step title="Configure the environment">
+    Create a `.env` file in the `frontend/` directory and set the backend API URL:
+
+    ```bash .env
+    VITE_API_URL=http://localhost:8000
+    ```
+
+    The frontend reads `VITE_API_URL` at build time through Vite's environment variable system. If this variable is not set, API requests will fail.
+
+    <Note>
+      Any variable prefixed with `VITE_` is exposed to the browser bundle. Do not store secrets in `.env` files.
+    </Note>
+  </Step>
+
+  <Step title="Start the development server">
+    ```bash
+    npm run dev
+    ```
+
+    Vite starts a development server with hot module replacement (HMR). The application is available at `http://localhost:5173`.
+  </Step>
+</Steps>
+
+## Available scripts
+
+The following scripts are defined in `package.json`:
+
+| Script | Command | Description |
+|--------|---------|-------------|
+| `npm run dev` | `vite` | Start the Vite development server with HMR at `http://localhost:5173` |
+| `npm run build` | `tsc -b && vite build` | Type-check with TypeScript, then build for production |
+| `npm run preview` | `vite preview` | Serve the production build locally for testing |
+
+## Building for production
+
+<Steps>
+  <Step title="Build the production bundle">
+    ```bash
+    npm run build
+    ```
+
+    This command runs two steps in sequence:
+
+    1. **`tsc -b`** — runs the TypeScript compiler in build mode, checking all types and reporting errors
+    2. **`vite build`** — bundles and minifies the application into the `dist/` directory
+
+    The build fails if TypeScript reports any type errors.
+  </Step>
+
+  <Step title="Preview the production build">
+    ```bash
+    npm run preview
+    ```
+
+    Starts a local static file server to serve the contents of `dist/`. Use this to verify the production build before deploying.
+  </Step>
+</Steps>
+
+## Path aliases
+
+The Vite configuration maps the `@` alias to the `frontend/src/` directory:
+
+```typescript vite.config.ts
+resolve: {
+  alias: {
+    '@': path.resolve(__dirname, './src'),
+  },
+},
+```
+
+You can import any file under `src/` using `@/` instead of relative paths:
+
+```typescript
+import { MyComponent } from '@/components/MyComponent';
+```
+
+## Tech stack
+
+| Package | Version | Role |
+|---------|---------|------|
+| `react` | ^18.3.1 | UI framework |
+| `react-dom` | ^18.3.1 | DOM rendering |
+| `typescript` | ^5.6.3 | Static typing |
+| `vite` | ^5.4.11 | Build tool and dev server |
+| `tailwindcss` | ^3.4.17 | Utility-first CSS |
+| `@vitejs/plugin-react` | ^4.3.4 | React fast refresh support |

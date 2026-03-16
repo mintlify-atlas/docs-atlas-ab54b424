@@ -1,0 +1,116 @@
+---
+title: "Privacy & data handling"
+description: "How HealthIA handles user data — no personal information is stored server-side."
+---
+
+<Note>
+  HealthIA does not store any symptom descriptions, patient context, or personal information on the server. All history is kept locally in your browser.
+</Note>
+
+## Server-side data handling
+
+The HealthIA backend is stateless. Each request to the `/predict/` endpoint is processed independently — the server does not write to a database, append to a log file, or retain any data between requests.
+
+The following data is **never stored or logged by the server**:
+
+- Symptom text submitted by the user
+- Patient context fields (age, sex, comorbidities, medications, etc.)
+- Prediction results or confidence scores
+- IP addresses or user identifiers
+- Session tokens or cookies
+
+No user accounts or authentication are required to use HealthIA.
+
+## What the API receives per request
+
+Each call to the prediction endpoint includes only the data needed to compute a response. The POST body structure is:
+
+```json
+{
+  "sintomas": "free-text symptom description",
+  "top_n": 5,
+  "patient_context": {
+    "age": 35,
+    "sex": "female",
+    "pregnant": false,
+    "comorbidities": ["hypertension"],
+    "medications": ["losartan"],
+    "recent_conditions": [],
+    "recent_surgeries": false,
+    "lifestyle_notes": ""
+  }
+}
+```
+
+All `patient_context` fields are optional. If you omit the `patient_context` object entirely, the system runs on symptom text alone.
+
+The equivalent GET request passes the same fields as query parameters:
+
+```http
+GET /predict/?sintomas=dor+de+cabeca&age=35&sex=female
+```
+
+In both cases, the data is used only to compute the prediction for that single request and is discarded immediately after the response is sent.
+
+## Local history storage
+
+The frontend stores past analyses in the browser's `localStorage`. This means:
+
+- History is saved on your device, not on any server
+- It persists across browser sessions until you clear it
+- It is not transmitted to the backend at any point
+- It is not accessible to HealthIA or any third party
+
+You can clear your history at any time using the history panel in the interface. Clearing browser data or `localStorage` for the site also removes it entirely.
+
+## CORS policy
+
+The API enforces a CORS (Cross-Origin Resource Sharing) policy that restricts which origins are allowed to call it. By default, only the following origins are permitted:
+
+| Origin | Purpose |
+|---|---|
+| `http://localhost:5173` | Local development (Vite dev server) |
+| `http://127.0.0.1:5173` | Local development (alternate loopback) |
+| `https://*.up.railway.app` | Railway-hosted deployments (regex match) |
+| Value of `FRONTEND_URL` env var | Production frontend URL (set at deploy time) |
+| Values in `FRONTEND_URLS` env var | Additional allowed origins (comma-separated) |
+
+Requests from origins not on this list are rejected by the browser before they reach the API logic. This prevents third-party websites from silently calling the API on behalf of a user.
+
+The `ALLOW_ALL_ORIGINS` environment variable can be set to `"true"` to disable origin restriction, but this is intended only for controlled development environments and is not recommended for production.
+
+## No accounts or authentication
+
+HealthIA requires no registration, login, or account creation. There are no user identifiers, session tokens, or persistent cookies. Each visit to the application is independent.
+
+## Summary
+
+<Note>
+  **What stays on your device:** All history, past analyses, and locally entered context.  
+  **What the server processes:** Only the current request's symptom text and optional context.  
+  **What the server keeps:** Nothing.
+</Note>
+
+## Frequently asked questions
+
+<AccordionGroup>
+  <Accordion title="Is my symptom data stored anywhere?">
+    No. The server processes your symptom text to compute a prediction and immediately discards it. Nothing is written to a database or log. Your history is stored only in your browser's `localStorage`.
+  </Accordion>
+
+  <Accordion title="Can I use HealthIA anonymously?">
+    Yes. No account, login, or identifying information is required. The API does not receive or record any identifier tied to you as a person.
+  </Accordion>
+
+  <Accordion title="What happens if I clear my browser data?">
+    Clearing `localStorage` for the HealthIA site removes all locally stored history. There is no server-side copy to recover from.
+  </Accordion>
+
+  <Accordion title="Does the API log requests?">
+    The backend does not implement application-level request logging of symptom content or patient context. Standard infrastructure logs (such as those produced by the hosting platform) may record HTTP metadata — method, status code, response time — but not request body content.
+  </Accordion>
+
+  <Accordion title="Can a third-party site call the HealthIA API on my behalf?">
+    No. The CORS policy restricts API calls to known origins. Browsers enforce this restriction automatically, preventing unauthorized cross-origin requests.
+  </Accordion>
+</AccordionGroup>

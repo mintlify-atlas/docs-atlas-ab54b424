@@ -1,0 +1,126 @@
+---
+title: "Medical disclaimer"
+description: "HealthIA is an educational tool — it does not provide medical diagnoses."
+---
+
+<Warning>
+  **This is not a medical diagnosis tool.** HealthIA suggests educational hypotheses only. Always consult a qualified healthcare professional for any medical concern.
+</Warning>
+
+## Official disclaimer
+
+Every response from the HealthIA system includes the following disclaimer, returned in the `disclaimer` field of every API response:
+
+```text
+Projeto educacional. Esta ferramenta sugere hipóteses de estudo e não substitui avaliação médica profissional.
+```
+
+*English translation: Educational project. This tool suggests study hypotheses and does not replace professional medical evaluation.*
+
+## What HealthIA is
+
+HealthIA is an educational triage assistant. It accepts free-text symptom descriptions and optional patient context, then returns a ranked list of probable conditions based on a trained ML classifier. Its purpose is to help users form a starting point for a conversation with a healthcare professional — not to conclude that conversation.
+
+The system is designed for:
+
+- **Educational exploration** of symptom patterns and related conditions
+- **Triage orientation**, giving users a sense of which medical domains are relevant to their symptoms
+- **Context-aware suggestions**, using patient demographics and history to improve relevance
+
+## What HealthIA is not
+
+HealthIA does not:
+
+- Diagnose diseases or medical conditions
+- Recommend treatments, medications, or dosages
+- Issue or suggest prescriptions
+- Replace clinical examination or laboratory testing
+- Provide emergency medical guidance
+
+The system returns **differential suggestions** (hypotheses), not conclusions. A high confidence score means the symptom pattern is statistically consistent with a condition — it does not mean the condition is present.
+
+## Low-confidence behavior
+
+When the input is too sparse, ambiguous, or non-clinical for the system to generate a reliable suggestion, the API returns an empty `top_predictions` list and the following warning:
+
+```text
+Informações insuficientes para sugestão confiável
+```
+
+*English translation: Insufficient information for a reliable suggestion.*
+
+This occurs when:
+
+- The symptom text is too short or contains no recognizable clinical terms
+- Too few TF-IDF features are non-zero after preprocessing
+- The top prediction confidence falls below the minimum threshold
+
+In these cases, no condition names are displayed and users are encouraged to provide more detail.
+
+## Emergency warnings
+
+When the highest-confidence prediction is flagged as an emergency condition (`is_emergency: true`) and its confidence is at or above 0.6, the API returns the following warning alongside the predictions:
+
+```text
+Foram encontradas hipóteses potencialmente urgentes. Procure avaliação profissional imediata se houver piora clínica.
+```
+
+*English translation: Potentially urgent hypotheses were found. Seek immediate professional evaluation if symptoms worsen.*
+
+This warning does not mean an emergency is confirmed. It means the symptom pattern is statistically consistent with a condition that can be serious, and that professional evaluation should not be delayed.
+
+## The MedicalDisclaimer UI component
+
+The frontend renders a `MedicalDisclaimer` component on every page where results are displayed. It is always visible and cannot be dismissed:
+
+```tsx
+export function MedicalDisclaimer() {
+  return (
+    <div
+      role="note"
+      aria-label="Aviso médico"
+    >
+      <strong>Aviso médico:</strong> Esta ferramenta é de apoio e não substitui avaliação médica profissional.
+    </div>
+  );
+}
+```
+
+*English translation of the displayed text: Medical notice: This tool is for support and does not replace professional medical evaluation.*
+
+This component is rendered independently of the prediction result — it appears whether or not the model returns suggestions.
+
+## When to seek immediate medical attention
+
+Do not rely on HealthIA if you are experiencing:
+
+- Chest pain, pressure, or tightness
+- Difficulty breathing or shortness of breath
+- Sudden severe headache
+- Loss of consciousness or altered mental state
+- Signs of stroke (face drooping, arm weakness, speech difficulty)
+- Severe abdominal pain
+- High fever with stiff neck or rash
+- Any symptom that is rapidly worsening
+
+Call emergency services or go to the nearest emergency room immediately in these situations.
+
+## Frequently asked questions
+
+<AccordionGroup>
+  <Accordion title="Can I use HealthIA to decide whether to see a doctor?">
+    No. HealthIA can help you understand which medical domains may be relevant to your symptoms, but it cannot determine whether your situation requires medical attention. When in doubt, consult a healthcare professional.
+  </Accordion>
+
+  <Accordion title="Why does the system show a high confidence score but still include a disclaimer?">
+    Confidence scores reflect statistical consistency between your symptom pattern and a condition in the training dataset — not a clinical certainty. Many conditions share overlapping symptoms, and the model has no access to examination findings, lab results, or imaging. The disclaimer is always present regardless of confidence.
+  </Accordion>
+
+  <Accordion title="What does 'educational hypothesis' mean?">
+    A hypothesis is a starting point for investigation, not a conclusion. HealthIA frames its output as study hypotheses — conditions worth discussing with a doctor — rather than diagnoses. The phrasing is deliberate: it signals that the output is for informational orientation, not clinical decision-making.
+  </Accordion>
+
+  <Accordion title="Does HealthIA recommend treatments or medications?">
+    No. The system returns condition names, confidence scores, severity indicators, and an explanation of why the top condition was suggested. It never recommends treatments, medications, dosages, or any clinical intervention.
+  </Accordion>
+</AccordionGroup>

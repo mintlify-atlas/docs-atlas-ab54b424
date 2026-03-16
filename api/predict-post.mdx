@@ -1,0 +1,149 @@
+---
+title: "POST /predict/"
+description: "Predict probable conditions from symptom text using a structured JSON body."
+---
+
+Returns the top predicted conditions for a given symptom description. Parameters are sent as a JSON request body. This is the preferred endpoint when you need to pass structured patient context, because it accepts `comorbidities`, `medications`, and `recent_conditions` as native JSON arrays instead of comma-separated strings.
+
+## Request
+
+**Method:** `POST`  
+**Path:** `/predict/`  
+**Content-Type:** `application/json`
+
+### Body parameters
+
+<ParamField body="sintomas" type="string" required>
+  Free-text description of the patient's symptoms, written in Portuguese or Spanish. Must be at least 1 character long.
+</ParamField>
+
+<ParamField body="top_n" type="integer" default="5">
+  Number of top predictions to return. Must be between 1 and 5 (inclusive).
+</ParamField>
+
+<ParamField body="patient_context" type="object">
+  Optional structured patient context. When provided, the fields are used to augment the text fed to the model. See [PatientContext model](/api/patient-context) for all available fields.
+
+  <Expandable title="patient_context properties">
+    <ParamField body="patient_context.age" type="integer">
+      Patient age in years. Accepted range: 0–120.
+    </ParamField>
+    <ParamField body="patient_context.sex" type="string">
+      Biological sex. One of: `male`, `female`, `other`, `unknown`.
+    </ParamField>
+    <ParamField body="patient_context.pregnant" type="boolean">
+      Whether the patient is currently pregnant.
+    </ParamField>
+    <ParamField body="patient_context.comorbidities" type="string[]">
+      List of known comorbidities.
+    </ParamField>
+    <ParamField body="patient_context.medications" type="string[]">
+      List of current medications.
+    </ParamField>
+    <ParamField body="patient_context.recent_conditions" type="string[]">
+      List of recent conditions or diagnoses.
+    </ParamField>
+    <ParamField body="patient_context.recent_surgeries" type="boolean">
+      Whether the patient has had a recent surgery.
+    </ParamField>
+    <ParamField body="patient_context.lifestyle_notes" type="string">
+      Free-text description of lifestyle factors.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Example request
+
+<CodeGroup>
+
+```bash Symptoms only
+curl -X POST "http://localhost:8000/predict/" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sintomas": "dor no peito ao respirar fundo, tosse seca e febre baixa"
+  }'
+```
+
+```bash With patient context
+curl -X POST "http://localhost:8000/predict/" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sintomas": "dor no peito ao respirar fundo, tosse seca e febre baixa",
+    "top_n": 3,
+    "patient_context": {
+      "age": 45,
+      "sex": "male",
+      "pregnant": false,
+      "comorbidities": ["hypertension", "diabetes"],
+      "medications": ["metformin", "amlodipine"],
+      "recent_conditions": ["covid-19"],
+      "recent_surgeries": false,
+      "lifestyle_notes": "smoker, sedentary lifestyle"
+    }
+  }'
+```
+
+</CodeGroup>
+
+## Example response
+
+```json
+{
+  "input_text": "dor no peito ao respirar fundo, tosse seca e febre baixa",
+  "normalized_text": "dor peit respir fund toss sec febr bax context pacient idad 45 anos faixa adulto sex masculin nao gestant comorbidad hypertens diabet medicac uso metformin amlodipin condicoes recent covid-19 nao cirurg estil vid smok sedentari",
+  "top_predictions": [
+    {
+      "disease": "pleurite",
+      "confidence": 0.5103,
+      "domain": "pneumologia",
+      "severity": "moderado",
+      "is_emergency": false
+    },
+    {
+      "disease": "pneumonia",
+      "confidence": 0.2874,
+      "domain": "pneumologia",
+      "severity": "grave",
+      "is_emergency": false
+    },
+    {
+      "disease": "pericardite",
+      "confidence": 0.0941,
+      "domain": "cardiologia",
+      "severity": "moderado",
+      "is_emergency": false
+    }
+  ],
+  "warning": null,
+  "disclaimer": "Projeto educacional. Esta ferramenta sugere hipóteses de estudo e não substitui avaliação médica profissional.",
+  "patient_context": {
+    "age": 45,
+    "sex": "male",
+    "pregnant": false,
+    "comorbidities": ["hypertension", "diabetes"],
+    "medications": ["metformin", "amlodipine"],
+    "recent_conditions": ["covid-19"],
+    "recent_surgeries": false,
+    "lifestyle_notes": "smoker, sedentary lifestyle"
+  },
+  "top_diagnosis_explanation": "Sugerido pela presença de dor no peito e tosse seca, considerando as condições recentes mencionadas, padrão frequentemente associado a pleurite."
+}
+```
+
+## Notes
+
+### Prefer POST for structured patient context
+
+The GET endpoint accepts `comorbidities`, `medications`, and `recent_conditions` as comma-separated strings because URL query strings cannot carry arrays natively. The POST endpoint accepts these fields as proper JSON arrays, which is less error-prone and supports values that contain commas.
+
+### Patient context deduplication
+
+String lists (`comorbidities`, `medications`, `recent_conditions`) are deduplicated case-insensitively by the predictor before building the model input. Supplying `["Diabetes", "diabetes"]` results in a single `"Diabetes"` entry.
+
+### Empty patient context
+
+If all fields in `patient_context` are `null`, empty arrays, or `"unknown"` (for `sex`), the object is treated as empty and `patient_context` in the response will be `null`. Refer to [PatientContext model](/api/patient-context) for the exact `is_empty()` logic.
+
+<Warning>
+The `disclaimer` field is always present in the response and must be surfaced to end users in any interface that displays predictions.
+</Warning>

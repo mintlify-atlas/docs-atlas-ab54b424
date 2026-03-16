@@ -1,0 +1,70 @@
+---
+title: "Development setup"
+description: "Prerequisites and repository setup for running HealthIA locally."
+---
+
+## Prerequisites
+
+Before you begin, make sure the following tools are installed on your machine:
+
+- **Python 3.10 or higher** — required for the FastAPI backend and ML pipeline
+- **Node.js 18 or higher** — required for the React/TypeScript frontend
+- **git** — for cloning the repository
+
+<Tip>
+  Run `python --version`, `node --version`, and `git --version` to verify your installed versions before proceeding.
+</Tip>
+
+## Cloning the repository
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone <repository-url>
+    cd healthia
+    ```
+  </Step>
+  <Step title="Verify the structure">
+    Your local repository should contain two top-level directories — one for the backend and one for the frontend:
+
+    <Tree>
+      <Tree.Folder name="HEALTHIA" defaultOpen>
+        <Tree.File name="main.py" />
+        <Tree.File name="requirements.txt" />
+        <Tree.File name="leitura.py" />
+        <Tree.Folder name="src">
+          <Tree.File name="config.py" />
+          <Tree.Folder name="training">
+            <Tree.File name="train.py" />
+            <Tree.File name="dataset_generator.py" />
+          </Tree.Folder>
+        </Tree.Folder>
+        <Tree.Folder name="data">
+          <Tree.File name="disease_catalog.json" />
+          <Tree.File name="symptom_cases.csv" />
+        </Tree.Folder>
+        <Tree.Folder name="models">
+          <Tree.File name="healthia_pipeline.joblib" />
+        </Tree.Folder>
+      </Tree.Folder>
+      <Tree.Folder name="frontend" defaultOpen>
+        <Tree.File name="package.json" />
+        <Tree.File name="vite.config.ts" />
+        <Tree.Folder name="src" />
+      </Tree.Folder>
+    </Tree>
+  </Step>
+</Steps>
+
+## Repository structure
+
+HealthIA is a full-stack application composed of two independent services that run separately:
+
+| Directory | Service | Language / Framework |
+|-----------|---------|----------------------|
+| `HEALTHIA/` | Backend API + ML pipeline | Python, FastAPI, scikit-learn |
+| `frontend/` | Web interface | TypeScript, React, Vite, Tailwind CSS |
+
+<Note>
+  The backend and frontend are separate services with their own dependency manifests and development servers. You need to start both independently to run the full application locally. See [Backend development](/development/backend) and [Frontend development](/development/frontend) for setup instructions for each service.
+</Note>

@@ -1,0 +1,138 @@
+---
+title: "GET /predict/"
+description: "Predict probable conditions from symptom text using query parameters."
+---
+
+Returns the top predicted conditions for a given symptom description. All parameters are passed as URL query strings. This endpoint is convenient for quick tests, browser requests, and lightweight integrations that do not need structured patient context.
+
+## Request
+
+**Method:** `GET`  
+**Path:** `/predict/`
+
+### Query parameters
+
+<ParamField query="sintomas" type="string" required>
+  Free-text description of the patient's symptoms, written in Portuguese or Spanish. Must be at least 1 character long.
+</ParamField>
+
+<ParamField query="top_n" type="integer" default="5">
+  Number of top predictions to return. Must be between 1 and 5 (inclusive).
+</ParamField>
+
+<ParamField query="age" type="integer">
+  Patient age in years. Accepted range: 0–120. Used to augment the model input with an age segment and an age bucket label (`crianca`, `adolescente`, `adulto`, or `idoso`).
+</ParamField>
+
+<ParamField query="sex" type="string">
+  Biological sex. One of: `male`, `female`, `other`, `unknown`. The value `unknown` is treated as absent and will not be included in the model input.
+</ParamField>
+
+<ParamField query="pregnant" type="boolean">
+  Whether the patient is currently pregnant. When `true`, the token `gestante gravidez atual` is appended to the model input. When `false`, `nao gestante` is appended.
+</ParamField>
+
+<ParamField query="comorbidities" type="string">
+  Comma-separated list of known comorbidities (e.g. `diabetes,hypertension`). Each item is trimmed of whitespace and deduplicated before use. Empty items are discarded.
+</ParamField>
+
+<ParamField query="medications" type="string">
+  Comma-separated list of current medications (e.g. `metformin,lisinopril`). Parsed the same way as `comorbidities`.
+</ParamField>
+
+<ParamField query="recent_conditions" type="string">
+  Comma-separated list of recent conditions or diagnoses (e.g. `covid-19,pneumonia`). Parsed the same way as `comorbidities`.
+</ParamField>
+
+<ParamField query="recent_surgeries" type="boolean">
+  Whether the patient has had a recent surgery. When `true`, appends `cirurgia recente tratamento recente` to the model input.
+</ParamField>
+
+<ParamField query="lifestyle_notes" type="string">
+  Free-text description of lifestyle factors (e.g. `sedentary, smoker for 10 years`). Appended verbatim after `estilo de vida`.
+</ParamField>
+
+## Example request
+
+<CodeGroup>
+
+```bash Symptoms only
+curl -G "http://localhost:8000/predict/" \
+  --data-urlencode "sintomas=febre alta, dor de cabeça intensa e rigidez na nuca"
+```
+
+```bash With patient context
+curl -G "http://localhost:8000/predict/" \
+  --data-urlencode "sintomas=febre alta, dor de cabeça intensa e rigidez na nuca" \
+  --data-urlencode "age=28" \
+  --data-urlencode "sex=female" \
+  --data-urlencode "top_n=3" \
+  --data-urlencode "comorbidities=asthma,diabetes"
+```
+
+</CodeGroup>
+
+## Example response
+
+```json
+{
+  "input_text": "febre alta, dor de cabeça intensa e rigidez na nuca",
+  "normalized_text": "febr alt dor cabec intens rigidez nuca context pacient idad 28 anos faixa adulto sex feminin",
+  "top_predictions": [
+    {
+      "disease": "meningite_bacteriana",
+      "confidence": 0.7821,
+      "domain": "neurologia",
+      "severity": "grave",
+      "is_emergency": true
+    },
+    {
+      "disease": "meningite_viral",
+      "confidence": 0.1034,
+      "domain": "neurologia",
+      "severity": "moderado",
+      "is_emergency": false
+    },
+    {
+      "disease": "enxaqueca",
+      "confidence": 0.0612,
+      "domain": "neurologia",
+      "severity": "leve",
+      "is_emergency": false
+    }
+  ],
+  "warning": "Foram encontradas hipóteses potencialmente urgentes. Procure avaliação profissional imediata se houver piora clínica.",
+  "disclaimer": "Projeto educacional. Esta ferramenta sugere hipóteses de estudo e não substitui avaliação médica profissional.",
+  "patient_context": {
+    "age": 28,
+    "sex": "female",
+    "comorbidities": ["asthma", "diabetes"]
+  },
+  "top_diagnosis_explanation": "Sugerido pela presença de febre alta e rigidez na nuca, padrão frequentemente associado a meningite bacteriana."
+}
+```
+
+## Notes
+
+### Comma-separated fields
+
+The `comorbidities`, `medications`, and `recent_conditions` parameters accept comma-separated values because URL query strings cannot natively carry arrays. The API parses these with `_parse_csv_field`:
+
+1. Split on `,`
+2. Strip leading and trailing whitespace from each item
+3. Discard empty items
+4. Return `null` if the resulting list is empty
+
+For example, `comorbidities=diabetes%2C%20hypertension` becomes `["diabetes", "hypertension"]`.
+
+<Tip>
+If your integration needs to send structured arrays rather than comma-separated strings, use [POST /predict/](/api/predict-post) instead. The POST body accepts `patient_context.comorbidities` as a native JSON array.
+</Tip>
+
+### Low-confidence responses
+
+If the model's top prediction scores below the minimum confidence threshold (`0.18`) or the input produces fewer than 2 non-zero features, `top_predictions` will be an empty array and `warning` will be set to `"Informações insuficientes para sugestão confiável"`.
+
+### Emergency warning
+
+If the top prediction is flagged as an emergency (`is_emergency: true`) and its confidence is ≥ 0.60, the `warning` field contains a message advising the user to seek immediate professional evaluation.

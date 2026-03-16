@@ -1,0 +1,146 @@
+---
+title: "Explainability"
+description: "Human-readable explanations for why each condition was suggested."
+---
+
+HealthIA generates a natural-language sentence explaining why the top-ranked condition was suggested. This explanation is included in the API response as `top_diagnosis_explanation` and displayed in the frontend above the prediction list.
+
+<Note>
+  Only the top-ranked prediction receives an explanation. Subsequent predictions in `top_predictions` do not have individual explanations.
+</Note>
+
+## When an explanation is generated
+
+An explanation is built only when `top_predictions` is non-empty — that is, when predictions passed both the `MIN_CONFIDENCE` (0.18) and `MIN_NONZERO_FEATURES` (2) thresholds. When no predictions are returned, `top_diagnosis_explanation` is `null`.
+
+```python predictor.py
+explanation = None
+if predictions:
+    explanation = self._build_top_explanation(
+        disease_slug=predictions[0]["disease"],
+        cleaned_input=cleaned_input,
+        patient_context=normalized_context,
+    )
+```
+
+## How the explanation is built
+
+The `_build_top_explanation` method assembles the explanation from two sources of evidence:
+
+<Steps>
+  <Step title="Match symptom tokens">
+    The normalized input tokens are compared against `core_symptoms` and `supporting_symptoms` from the disease catalog entry. A symptom term matches if **all** of its normalized tokens are present in the input:
+
+    ```python predictor.py
+    def _matched_terms(self, input_tokens: set[str], terms: list[str]) -> list[str]:
+        matches = []
+        for term in terms:
+            normalized = self.normalizer.normalize_text(str(term))
+            tokens = [token for token in normalized.split() if token]
+            if tokens and all(token in input_tokens for token in tokens):
+                matches.append(str(term))
+        return matches
+    ```
+
+    Up to three matched symptom terms are included in the explanation.
+  </Step>
+  <Step title="Collect context evidence">
+    If patient context was provided, up to two context evidence strings are appended. Evidence is derived from:
+    - Patient age (`"a faixa etária informada (34 anos)"`)
+    - Pregnancy status (`"o contexto de gestação informado"`)
+    - Comorbidities (`"as comorbidades relatadas"`)
+    - Recent conditions (matched against `context_clues` in the catalog, or `"as condições recentes mencionadas"` if no specific match)
+    - Lifestyle notes (`"o histórico adicional informado"`, only when no recent conditions are present)
+  </Step>
+  <Step title="Compose the sentence">
+    The fragments are joined into a single Portuguese sentence:
+
+    ```python predictor.py
+    joined = " e ".join(fragments)
+    return f"Sugerido {joined}, padrão frequentemente associado a {self._humanize_term(disease_slug)}."
+    ```
+
+    If neither symptom matches nor context evidence were found, a generic fallback is used:
+
+    ```python predictor.py
+    return f"Sugestão educacional alinhada ao padrão sintomático mais compatível com {self._humanize_term(disease_slug)}."
+    ```
+  </Step>
+</Steps>
+
+## Term humanization
+
+All slug identifiers (both disease slugs and catalog term identifiers) are passed through `_humanize_term` before being included in the explanation text:
+
+```python predictor.py
+def _humanize_term(self, value: str) -> str:
+    return str(value).replace("_", " ")
+```
+
+This converts `"dor_cabeca"` → `"dor cabeca"`, `"covid_19"` → `"covid 19"`, and `"falta_ar"` → `"falta ar"`.
+
+## Example explanations
+
+The following examples show real output format as produced by `_build_top_explanation`:
+
+<Tabs>
+  <Tab title="Symptom match only">
+    Input: `"febre, dor de cabeça, cansaço"` — top prediction: `gripe`
+
+    ```text
+    Sugerido pela presença de febre e dor de cabeça e fadiga, padrão frequentemente associado a gripe.
+    ```
+  </Tab>
+  <Tab title="Symptom match + context">
+    Input: `"febre, dor de cabeça"` with `age=34`, `pregnant=true` — top prediction: `infeccao_urinaria`
+
+    ```text
+    Sugerido pela presença de febre e considerando a faixa etária informada (34 anos) e o contexto de gestação informado, padrão frequentemente associado a infeccao urinaria.
+    ```
+  </Tab>
+  <Tab title="Context only">
+    Input matched no specific catalog symptom terms, but context was provided with `comorbidities=["diabetes"]`:
+
+    ```text
+    Sugerido considerando as comorbidades relatadas, padrão frequentemente associado a diabetes mellitus.
+    ```
+  </Tab>
+  <Tab title="No evidence (fallback)">
+    Top prediction was made but no matched terms or context evidence could be extracted:
+
+    ```text
+    Sugestão educacional alinhada ao padrão sintomático mais compatível com gripe.
+    ```
+  </Tab>
+</Tabs>
+
+## When explanation is null
+
+`top_diagnosis_explanation` is `null` in the following situations:
+
+| Situation | Reason |
+|---|---|
+| No predictions returned | Both quality filters failed — confidence below 0.18 or fewer than 2 non-zero TF-IDF features |
+| Input failed `is_meaningful_input` | Input normalized to fewer than 2 non-negation tokens |
+| Disease slug not in catalog | `self.catalog_by_slug.get(disease_slug, {})` returned an empty dict |
+
+The frontend `PredictionResult` component conditionally renders the explanation panel only when the value is non-null:
+
+```tsx PredictionResult.tsx
+{result.topDiagnosisExplanation ? (
+  <div className="...">
+    <p className="...">Explicação principal</p>
+    <p className="mt-2">{result.topDiagnosisExplanation}</p>
+  </div>
+) : null}
+```
+
+## Disease catalog fields used
+
+The explainability engine reads the following fields from each disease catalog entry:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `core_symptoms` | `string[]` | Primary symptom terms matched against normalized input |
+| `supporting_symptoms` | `string[]` | Secondary symptom terms matched against normalized input |
+| `context_clues` | `string[]` | Terms matched against recent conditions for specific evidence phrasing |

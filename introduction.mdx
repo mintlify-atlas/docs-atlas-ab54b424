@@ -1,0 +1,98 @@
+---
+title: "Introduction"
+description: "HealthIA is a context-aware AI symptom triage assistant that uses NLP and machine learning to suggest probable medical conditions based on free-text symptom descriptions."
+---
+
+<Warning>
+  **Educational tool only.** HealthIA is not a medical diagnosis system. Always consult a qualified healthcare professional for medical advice, diagnosis, or treatment.
+</Warning>
+
+## What is HealthIA?
+
+HealthIA is a full-stack AI application that analyzes free-text symptom descriptions and optional patient context to suggest likely conditions in an educational triage setting. It combines natural language processing, machine learning, and a modern SaaS-style interface to deliver context-aware insights safely and transparently.
+
+The system targets Portuguese clinical language, making it accessible to Brazilian users who want to better understand their symptoms before (or alongside) seeking professional care.
+
+## How it works
+
+<Steps>
+  <Step title="Describe your symptoms">
+    Enter a free-text description of your symptoms in natural language. The system handles noisy, incomplete, or colloquial input through NLP preprocessing.
+  </Step>
+  <Step title="Optionally add patient context">
+    Provide optional demographic and clinical context — age, sex, pregnancy status, comorbidities, medications, and more — to improve prediction relevance.
+  </Step>
+  <Step title="Receive differential suggestions">
+    The ML pipeline returns the top probable conditions with confidence scores, severity indicators, and emergency flags.
+  </Step>
+  <Step title="Review the explanation">
+    HealthIA explains why the top condition was suggested, citing matched symptoms and relevant patient context.
+  </Step>
+</Steps>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Symptom analysis" icon="magnifying-glass" href="/features/symptom-analysis">
+    Free-text NLP preprocessing for Portuguese clinical language with noise tolerance.
+  </Card>
+  <Card title="Patient context" icon="user-doctor" href="/features/patient-context">
+    Optional age, sex, comorbidities, medications, and more for personalized predictions.
+  </Card>
+  <Card title="Differential suggestions" icon="list-check" href="/features/differential-suggestions">
+    Top-N probable conditions with confidence scores and severity indicators.
+  </Card>
+  <Card title="Explainability" icon="lightbulb" href="/features/explainability">
+    Human-readable explanations for why each condition was suggested.
+  </Card>
+  <Card title="Local history" icon="clock-rotate-left" href="/features/history">
+    Past analyses stored locally — no personal data sent to the server.
+  </Card>
+  <Card title="API reference" icon="code" href="/api/overview">
+    REST API with GET and POST endpoints for programmatic access.
+  </Card>
+</CardGroup>
+
+## Tech stack
+
+<Tabs>
+  <Tab title="Frontend">
+    | Technology | Purpose |
+    |---|---|
+    | React 18 + TypeScript | UI framework |
+    | Vite | Build tool and dev server |
+    | Tailwind CSS | Utility-first styling |
+    | Component-driven architecture | Modular, testable UI |
+  </Tab>
+  <Tab title="Backend">
+    | Technology | Purpose |
+    |---|---|
+    | FastAPI | REST API framework |
+    | scikit-learn | ML pipeline (TF-IDF + classifier) |
+    | XGBoost | Gradient boosting classifier |
+    | Joblib | Model serialization |
+    | Pydantic | Request/response validation |
+  </Tab>
+  <Tab title="Infrastructure">
+    | Technology | Purpose |
+    |---|---|
+    | Railway | Cloud deployment |
+    | Uvicorn | ASGI server |
+    | GitHub | Version control |
+  </Tab>
+</Tabs>
+
+## Live demo
+
+A production deployment is available at the Railway-hosted URL. The API's interactive documentation (Swagger UI) is accessible at the `/docs` endpoint on the backend.
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run HealthIA locally in under 5 minutes.
+  </Card>
+  <Card title="API Reference" icon="brackets-curly" href="/api/overview">
+    Integrate HealthIA into your application.
+  </Card>
+</CardGroup>

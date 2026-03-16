@@ -1,0 +1,219 @@
+---
+title: 'Backend architecture'
+description: 'FastAPI application structure, routing, middleware, and configuration.'
+---
+
+The HealthIA backend is a single **FastAPI** application. It has no database, no background workers, and no caching layer. Each request is handled statelessly: the CORS middleware validates the origin, the router validates the payload with Pydantic, and the predictor returns a result.
+
+## Application entry point
+
+`main.py` creates the FastAPI application, configures CORS, and mounts the router:
+
+```python main.py
+app = FastAPI(
+    title="HealthIA API",
+    description="API educacional para sugestão de hipóteses de doenças com base em sintomas em texto livre.",
+    version="2.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if allow_all_origins else sorted(set(origins)),
+    allow_origin_regex=None if allow_all_origins else r"^https://.*\.up\.railway\.app$",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(sintomas_router, tags=["Sintomas"])
+```
+
+Start the server locally:
+
+```bash
+cd HEALTHIA
+uvicorn main:app --reload
+```
+
+Interactive API docs are available at `/docs` once the server is running.
+
+## CORS configuration
+
+CORS is resolved at startup from three sources:
+
+| Source | Behavior |
+|--------|----------|
+| Hardcoded defaults | `http://127.0.0.1:5173` and `http://localhost:5173` are always allowed. |
+| `FRONTEND_URLS` env var | Comma-separated list of additional origins. Each value is trimmed and any trailing slash is removed before adding. |
+| `FRONTEND_URL` env var | Single additional origin. Added after `FRONTEND_URLS`. |
+| `ALLOW_ALL_ORIGINS=true` | Sets `allow_origins=["*"]` and removes the origin regex, permitting all origins. Use in development only. |
+
+In addition to the explicit list, FastAPI's `CORSMiddleware` is given a regex that matches any `*.up.railway.app` subdomain over HTTPS:
+
+```python main.py
+allow_origin_regex=None if allow_all_origins else r"^https://.*\.up\.railway\.app$"
+```
+
+This lets Railway preview and production deployments work without updating environment variables for every new deploy URL.
+
+<Warning>
+Setting `ALLOW_ALL_ORIGINS=true` disables origin checking entirely. Do not use this in a production deployment that processes real patient input.
+</Warning>
+
+## Router structure
+
+All routes are defined in `api/sintomasAPI.py` and registered under the `Sintomas` tag. A single `HealthIAPredictor` instance is created at module import time and shared across all requests:
+
+```python api/sintomasAPI.py
+router = APIRouter()
+predictor = HealthIAPredictor()
+```
+
+`HealthIAPredictor.__init__` checks for the serialized model file. If it does not exist, it triggers a full training run before the first request is served.
+
+## Endpoints
+
+### `GET /`
+
+Health-check / welcome endpoint. Returns a fixed JSON object.
+
+```json
+{ "message": "Welcome to HealthIA API", "mode": "educational" }
+```
+
+### `GET /predict/`
+
+Accepts all prediction parameters as query-string fields. List fields (`comorbidities`, `medications`, `recent_conditions`) are passed as comma-separated strings and split by `_parse_csv_field`.
+
+| Parameter | Type | Constraints |
+|-----------|------|-------------|
+| `sintomas` | `str` | Required, non-empty |
+| `top_n` | `int` | 1–5, default 5 |
+| `age` | `int` | 0–120 |
+| `sex` | `str` | `male` \| `female` \| `other` \| `unknown` |
+| `pregnant` | `bool` | — |
+| `comorbidities` | `str` | Comma-separated |
+| `medications` | `str` | Comma-separated |
+| `recent_conditions` | `str` | Comma-separated |
+| `recent_surgeries` | `bool` | — |
+| `lifestyle_notes` | `str` | — |
+
+### `POST /predict/`
+
+Accepts a JSON body. Preferred for structured requests from the frontend.
+
+```json
+{
+  "sintomas": "dor de cabeça, febre, cansaço",
+  "top_n": 5,
+  "patient_context": {
+    "age": 34,
+    "sex": "female",
+    "pregnant": false,
+    "comorbidities": ["hipertensão"],
+    "medications": [],
+    "recent_conditions": [],
+    "recent_surgeries": null,
+    "lifestyle_notes": null
+  }
+}
+```
+
+## Request/response flow
+
+```
+POST /predict/
+  │
+  ▼
+PredictionRequest (Pydantic)
+  • sintomas: str         — validated non-empty
+  • top_n: int            — clamped to [1, 5]
+  • patient_context: PatientContextPayload | None
+  │
+  ▼
+PatientContextPayload.to_domain()
+  — maps API payload to PatientContext dataclass
+  │
+  ▼
+predictor.predict(sintomas, top_n, patient_context)
+  — see ML pipeline docs
+  │
+  ▼
+_build_response(result)
+  returns:
+  {
+    "input_text": str,
+    "normalized_text": str,
+    "top_predictions": [ {disease, confidence, domain, severity, is_emergency} ],
+    "warning": str | null,
+    "disclaimer": str,
+    "patient_context": dict | null,
+    "top_diagnosis_explanation": str | null
+  }
+```
+
+## Pydantic models
+
+### `PatientContextPayload`
+
+```python api/sintomasAPI.py
+class PatientContextPayload(BaseModel):
+    age: int | None = Field(default=None, ge=0, le=120)
+    sex: Literal["male", "female", "other", "unknown"] | None = None
+    pregnant: bool | None = None
+    comorbidities: list[str] | None = None
+    medications: list[str] | None = None
+    recent_conditions: list[str] | None = None
+    recent_surgeries: bool | None = None
+    lifestyle_notes: str | None = None
+```
+
+All fields are optional. An empty or entirely-null context object is treated identically to omitting the field.
+
+### `PredictionRequest`
+
+```python api/sintomasAPI.py
+class PredictionRequest(BaseModel):
+    sintomas: str = Field(..., min_length=1)
+    top_n: int = Field(default=5, ge=1, le=5)
+    patient_context: PatientContextPayload | None = None
+```
+
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FRONTEND_URL` | `""` | Single allowed CORS origin. |
+| `FRONTEND_URLS` | `""` | Comma-separated list of allowed CORS origins. |
+| `ALLOW_ALL_ORIGINS` | `"false"` | Set to `"true"` to permit all origins (development only). |
+
+No database URL or secret key is required. The application is fully stateless.
+
+## Directory structure
+
+```
+HEALTHIA/
+├── main.py                    # App factory, CORS, router mount
+├── api/
+│   └── sintomasAPI.py         # Routes, Pydantic models, response builder
+├── src/
+│   ├── config.py              # Path constants and inference thresholds
+│   ├── data_loading.py        # Catalog and dataset loaders
+│   ├── inference/
+│   │   └── predictor.py       # HealthIAPredictor, PatientContext
+│   ├── preprocessing/
+│   │   └── text.py            # SymptomTextPreprocessor
+│   ├── training/
+│   │   ├── train.py           # Pipeline builder and training loop
+│   │   └── dataset_generator.py
+│   └── evaluation/
+│       └── report.py          # Metrics reader
+├── data/
+│   ├── disease_catalog.json
+│   └── symptom_cases.csv
+├── models/
+│   ├── healthia_pipeline.joblib
+│   ├── evaluation_metrics.json
+│   └── training_summary.md
+└── requirements.txt
+```

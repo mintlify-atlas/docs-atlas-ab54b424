@@ -1,0 +1,162 @@
+---
+title: "Symptom analysis"
+description: "How HealthIA processes free-text symptom descriptions using NLP preprocessing."
+---
+
+<Warning>
+  HealthIA is an educational tool. It does not provide medical diagnoses. Always consult a qualified healthcare professional.
+</Warning>
+
+HealthIA accepts free-text symptom descriptions in Portuguese clinical language and runs them through a multi-step NLP preprocessing pipeline before passing them to the ML model. This page explains how input is collected, validated, and normalized.
+
+## Input format
+
+The `SymptomInput` component lets you type symptoms one at a time or paste a comma-separated list. Symptoms are displayed as removable tags. The input accepts natural language — you do not need to use clinical terminology.
+
+<Tip>
+  You can also paste a list separated by commas, semicolons, or newlines. The component splits and commits all items at once.
+</Tip>
+
+The component enforces two hard limits:
+
+| Constraint | Value |
+|---|---|
+| Minimum symptoms required | 2 |
+| Maximum symptoms allowed | 8 |
+
+Duplicate entries (compared after normalization) are silently ignored, and a feedback message is shown when the limit is reached.
+
+## Meaningful-input check
+
+Before the ML model is called, the backend runs `is_meaningful_input` on the raw text to catch submissions that carry no useful signal:
+
+```python predictor.py
+def is_meaningful_input(text: str) -> bool:
+    normalized = SymptomTextPreprocessor().normalize_text(text)
+    tokens = [token for token in normalized.split() if not token.startswith("neg_")]
+    return len(tokens) >= 2
+```
+
+Input that normalizes to fewer than two non-negation tokens is rejected. The API returns an empty `top_predictions` list and sets `warning` to `"Informações insuficientes para sugestão confiável"`.
+
+## NLP preprocessing pipeline
+
+Every text string — both user input and any appended patient context — is passed through `SymptomTextPreprocessor.normalize_text`. The pipeline runs the following steps in order:
+
+<Steps>
+  <Step title="Accent stripping and lowercasing">
+    Unicode accents are removed with `unicodedata.normalize("NFKD", ...)` and all characters are lowercased. `"Náusea"` becomes `"nausea"`.
+  </Step>
+  <Step title="Non-alphabetic character removal">
+    A regex removes anything that is not a letter, digit, or whitespace. Punctuation and special characters are replaced with spaces.
+  </Step>
+  <Step title="Phrase normalization">
+    Multi-word clinical phrases are replaced with canonical underscore tokens before tokenization, so word-order variants map to the same feature.
+
+    ```python text.py
+    PHRASE_NORMALIZATION = {
+        "dor de cabeca": "dor_cabeca",
+        "falta de ar":   "falta_ar",
+        "dor no peito":  "dor_peito",
+        "aperto no peito": "dor_peito",
+        "coracao acelerado": "palpitacao",
+        "ardor ao urinar": "ardor_urinar",
+        "nariz entupido": "congestao_nasal",
+        "perda de olfato": "anosmia",
+        # … and more
+    }
+    ```
+  </Step>
+  <Step title="Tokenization">
+    The text is split into tokens using `re.findall(r"[a-z_]{2,}", text)`. Tokens shorter than two characters are discarded.
+  </Step>
+  <Step title="Stopword and noise removal">
+    Portuguese functional words (`"com"`, `"de"`, `"para"`, `"em"`, etc.) and a small set of meaningless tokens (`"teste"`, `"abc"`, `"asdf"`, `"qwer"`, `"xyz"`) are dropped.
+  </Step>
+  <Step title="Negation handling">
+    Tokens following negation cues (`"nao"`, `"nem"`, `"sem"`) are prefixed with `neg_`. For example, `"sem febre"` produces the token `neg_febre` rather than `febre`, preventing a negated symptom from matching a positive feature.
+  </Step>
+  <Step title="Abbreviation and token normalization">
+    Clinical abbreviations are expanded and variant word forms are mapped to canonical tokens:
+
+    ```python text.py
+    ABBREVIATIONS = {
+        "cefaleia":    "dor_cabeca",
+        "dispneia":    "falta_ar",
+        "disuria":     "ardor_urinar",
+        "dm":          "diabetes",
+        "has":         "hipertensao",
+        "taquicardia": "palpitacao",
+    }
+
+    TOKEN_NORMALIZATION = {
+        "enjoo":    "nausea",
+        "vomitos":  "vomito",
+        "cansaco":  "fadiga",
+        "coceira":  "prurido",
+        # … and more
+    }
+    ```
+  </Step>
+  <Step title="Light Portuguese stemming">
+    A rule-based stemmer strips common Portuguese suffixes (`-mente`, `-ção`, `-ado`, `-ura`, etc.) so inflected forms match their root.
+  </Step>
+  <Step title="Fuzzy vocabulary matching">
+    If the preprocessor was fitted with a vocabulary reference and a token is not in that vocabulary, `difflib.get_close_matches` attempts a correction at a 0.9 similarity cutoff.
+  </Step>
+</Steps>
+
+## End-to-end example
+
+Given the raw input `"Estou com dor de cabeça e muita febre, sem tosse"`, the pipeline produces:
+
+```text
+Input:       "Estou com dor de cabeça e muita febre, sem tosse"
+             ↓  accent strip + lowercase
+             "estou com dor de cabeca e muita febre sem tosse"
+             ↓  phrase normalization
+             "estou com dor_cabeca e muita febre sem tosse"
+             ↓  tokenize
+             ["estou", "com", "dor_cabeca", "muita", "febre", "sem", "tosse"]
+             ↓  stopword removal + negation handling
+             ["dor_cabeca", "febre", "neg_tosse"]
+Normalized:  "dor_cabeca febre neg_tosse"
+```
+
+The normalized string is then fed to the TF-IDF feature extractor in the ML pipeline.
+
+## Noisy and incomplete input
+
+<AccordionGroup>
+  <Accordion title="Colloquial or slang terms">
+    Many everyday variants are mapped explicitly. `"enjoo"` → `nausea`, `"xixi"` → `urinar`, `"coceira"` → `prurido`. Unlisted terms are passed through the stemmer and fuzzy matcher.
+  </Accordion>
+  <Accordion title="Clinical abbreviations">
+    Common Portuguese medical abbreviations are expanded before token normalization. `"dm"` → `diabetes`, `"has"` → `hipertensao`, `"cefaleia"` → `dor_cabeca`.
+  </Accordion>
+  <Accordion title="Gibberish or test input">
+    Tokens in `MEANINGLESS_TOKENS` (`"teste"`, `"abc"`, `"asdf"`, `"qwer"`, `"xyz"`) are dropped during stopword removal. If the resulting token set is smaller than two non-negation items, `is_meaningful_input` returns `false` and the prediction is skipped.
+  </Accordion>
+  <Accordion title="Only negated symptoms">
+    If a user enters only negated symptoms (e.g., `"sem febre, sem tosse"`), all tokens are prefixed `neg_` and the non-negated token count falls below 2. The submission is treated as insufficient input.
+  </Accordion>
+</AccordionGroup>
+
+## The SymptomInput UI component
+
+The frontend `SymptomInput` component (`frontend/src/components/SymptomInput.tsx`) handles the entry experience:
+
+- **Tag-based input** — each accepted symptom is shown as a removable chip.
+- **Quick suggestions** — up to 10 common symptoms are shown below the input field. Typing filters the list down to 6 matching items. Suggestions already added are hidden.
+- **Commit triggers** — pressing **Enter**, **,**, or **Tab** commits the current value. Pasting text containing commas, semicolons, or newlines triggers bulk import automatically.
+- **Error and feedback display** — validation errors (e.g., from the API) appear above the suggestions panel. Duplicate-skip and limit-reached notices appear in amber below the input.
+
+```tsx SymptomInput.tsx
+// Commit on Enter, comma, or Tab
+onKeyDown={(event) => {
+  if ((event.key === 'Enter' || event.key === ',' || event.key === 'Tab') && inputValue.trim()) {
+    event.preventDefault();
+    commitSymptoms(inputValue);
+  }
+}}
+```

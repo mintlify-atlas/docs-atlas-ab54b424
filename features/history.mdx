@@ -1,0 +1,72 @@
+---
+title: "Local history"
+description: "HealthIA stores past analyses in your browser — no personal data is sent to the server."
+---
+
+Every completed analysis is automatically saved to your browser's local storage. The history panel lets you review past results and re-run previous queries without re-entering symptoms.
+
+<Note>
+  History is stored exclusively in your browser using `localStorage`. Nothing is persisted server-side. Clearing your browser data or using a different device or browser profile will result in an empty history.
+</Note>
+
+## What is stored
+
+Each history item (`DiagnosisHistoryItem`) contains the full result of a single analysis:
+
+- **Timestamp** (`createdAt`) — when the analysis was run, displayed in the panel header.
+- **Symptoms** — the list of symptoms that were submitted.
+- **Diagnosis** — the top condition(s) from `top_predictions`.
+- **Warning** — the `warning` field from the API response, if present.
+- **Top diagnosis explanation** — the `top_diagnosis_explanation` string, if present.
+- **Patient context** — any demographic or clinical context that was provided (summarized as badges).
+
+Invalid entries (e.g., partially written items from an interrupted session) are silently ignored when the panel loads.
+
+## Privacy implications
+
+<AccordionGroup>
+  <Accordion title="Data stays on your device">
+    No symptom descriptions, patient context, or results are stored on HealthIA servers. The only server communication is the live HTTP request to the prediction API endpoint when you submit symptoms. Results are stored in `localStorage` by the frontend after the response is received.
+  </Accordion>
+  <Accordion title="What localStorage means">
+    `localStorage` is a browser-level key-value store scoped to the site's origin. Data persists across page refreshes and browser restarts, but is:
+    - Not shared between different browsers or devices
+    - Not synced via any cloud service
+    - Erased when you clear browser site data or use private/incognito mode
+  </Accordion>
+  <Accordion title="Sensitive input considerations">
+    If you enter sensitive health information (real patient data, personal medical history), be aware that this data will remain in your browser's local storage until you clear it. Use the **Limpar histórico** (Clear history) button in the panel to remove all stored entries.
+  </Accordion>
+</AccordionGroup>
+
+## The HistoryPanel UI component
+
+The `HistoryPanel` component (`frontend/src/components/HistoryPanel.tsx`) renders the stored history. Key behaviors:
+
+- **Empty state** — when no history exists, a centered placeholder prompts you to run your first analysis.
+- **Entry cards** — each saved analysis is shown as a card with:
+  - The timestamp and top diagnosis label(s)
+  - The warning message (amber text), if present
+  - The top diagnosis explanation snippet, if present
+  - Symptom chips
+  - Patient context summary badges (when context was provided)
+- **Repeat query** — each card has a **Repetir consulta** (Repeat query) button that pre-populates the symptom input with the saved symptoms. The button is disabled when no symptoms were stored for that entry.
+- **Clear all** — the **Limpar histórico** button at the top of the panel removes all entries. It is disabled when the history is already empty.
+
+```tsx HistoryPanel.tsx
+<Button variant="ghost" onClick={onClear} disabled={safeItems.length === 0}>
+  Limpar histórico
+</Button>
+```
+
+## Viewing history
+
+The history panel is displayed on the main application page below the active analysis. Entries appear in the order they were saved. Each entry is rendered as an `<article>` element, making the list semantically accessible.
+
+## Repeating a past analysis
+
+Clicking **Repetir consulta** on a history card calls the `onRepeat` callback with the full history item. The application re-populates the symptom input with the saved symptoms, allowing you to submit the same query again — for example, to compare results after adding patient context or updating symptoms.
+
+<Tip>
+  Repeating a query re-submits to the live API. Results may differ from the stored entry if the model has been updated.
+</Tip>

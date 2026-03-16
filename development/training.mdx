@@ -1,0 +1,128 @@
+---
+title: "Model training"
+description: "How to retrain the HealthIA ML model with custom or updated data."
+---
+
+## Overview
+
+HealthIA uses a scikit-learn pipeline that combines TF-IDF feature extraction with a logistic regression classifier. The model is serialized to disk and loaded on startup — no retraining is required between server restarts as long as the model file exists.
+
+## Auto-train mechanism
+
+When the backend starts, `HealthIAPredictor` checks for the model file at `HEALTHIA/models/healthia_pipeline.joblib`. If the file is not found, training runs automatically before the server begins accepting requests.
+
+This means:
+
+- **First run after cloning** — training runs automatically, which takes a minute or two.
+- **Subsequent runs** — the model loads from disk and the server starts immediately.
+- **After deleting the model file** — training runs again on the next startup.
+
+## Training pipeline
+
+The training process follows these steps in order:
+
+<Steps>
+  <Step title="Dataset generation">
+    `dataset_generator.py` reads the disease catalog from `HEALTHIA/data/disease_catalog.json` and generates synthetic symptom case descriptions. Each disease entry contains core symptoms, supporting symptoms, openers, and optional context clues, which are combined randomly to produce natural-language text samples.
+
+    The generator produces 60 samples per disease by default, shuffles the result, and writes it to `HEALTHIA/data/symptom_cases.csv`.
+  </Step>
+
+  <Step title="Feature extraction">
+    The pipeline builds two TF-IDF representations of each symptom text and combines them using `FeatureUnion`:
+
+    - **Word-level TF-IDF** — unigrams and bigrams (`ngram_range=(1, 2)`), with sublinear term frequency scaling
+    - **Character-level TF-IDF** — character n-grams of length 3–5 (`analyzer="char_wb"`), which improves robustness to spelling variations
+
+    Feature selection then reduces the combined feature matrix to the top 1,500 features using a chi-squared test.
+  </Step>
+
+  <Step title="Classifier training">
+    A logistic regression classifier is fitted on the training split (80% of the dataset). The classifier uses `class_weight="balanced"` to handle any class imbalance in the generated data.
+  </Step>
+
+  <Step title="Evaluation">
+    The pipeline evaluates the model on the held-out test split (20%) and runs 5-fold stratified cross-validation on the training set. Metrics computed include accuracy, macro-averaged precision, recall, and F1, along with a per-class classification report and confusion matrix.
+  </Step>
+
+  <Step title="Saving artifacts">
+    Three files are written to `HEALTHIA/models/`:
+
+    | File | Contents |
+    |------|----------|
+    | `healthia_pipeline.joblib` | Serialized pipeline, label encoder, and class names |
+    | `evaluation_metrics.json` | All evaluation metrics from the training run |
+    | `training_summary.md` | Human-readable summary of accuracy and F1 scores |
+  </Step>
+</Steps>
+
+## Data files
+
+| File | Path | Description |
+|------|------|-------------|
+| Disease catalog | `HEALTHIA/data/disease_catalog.json` | Source of truth for all diseases, their symptoms, and metadata. Edit this file to add or modify conditions. |
+| Symptom dataset | `HEALTHIA/data/symptom_cases.csv` | Generated training data. Regenerated automatically before each training run. |
+
+## Model output files
+
+| File | Path | Description |
+|------|------|-------------|
+| Pipeline | `HEALTHIA/models/healthia_pipeline.joblib` | Loaded by the API at startup for inference |
+| Metrics | `HEALTHIA/models/evaluation_metrics.json` | Accuracy, F1, precision, recall, CV scores, and confusion matrix |
+| Summary | `HEALTHIA/models/training_summary.md` | Concise training report with key metrics |
+
+## The leitura.py script
+
+`leitura.py` is a convenience script that rebuilds all project assets in one step. It:
+
+1. Calls `save_dataset()` to regenerate `symptom_cases.csv` from the disease catalog
+2. Calls `train_and_save_model(force_regenerate_dataset=False)` to train the model using the freshly generated dataset
+
+Run it from the `HEALTHIA/` directory:
+
+```bash
+python leitura.py
+```
+
+The script prints the final accuracy and macro F1 score when it completes:
+
+```
+Modelo treinado com accuracy=0.9250 e macro_f1=0.9213
+```
+
+## Forcing a retrain
+
+To retrain the model without restarting the server, call `train_and_save_model` directly from a Python session:
+
+```python
+from src.training.train import train_and_save_model
+
+# Regenerate the dataset and retrain
+metrics = train_and_save_model(force_regenerate_dataset=True)
+print(metrics['accuracy'], metrics['f1_macro'])
+```
+
+Set `force_regenerate_dataset=False` if you want to retrain on the existing `symptom_cases.csv` without regenerating it first.
+
+<Tip>
+  You can also run `train.py` directly as a script. It always regenerates the dataset and prints a summary of accuracy, F1, CV accuracy, and class count:
+
+  ```bash
+  python -m src.training.train
+  ```
+</Tip>
+
+## Customizing the dataset
+
+To add a new condition or change the symptoms associated with an existing one, edit `HEALTHIA/data/disease_catalog.json`. Each entry in the catalog defines:
+
+- `slug` — identifier used as the class label
+- `domain` — medical domain (e.g., `"neurological"`, `"autoimmune"`)
+- `severity` and `is_emergency` — metadata used in API responses
+- `core_symptoms` — primary symptoms always sampled during generation
+- `supporting_symptoms` — secondary symptoms sampled to add variation
+- `openers` — sentence-opening phrases in Portuguese clinical language
+- `context_clues` — optional patient context phrases included in ~35% of samples
+- `exclude_symptoms` — symptoms used in negative phrasing ("sem ...") in ~20% of samples
+
+After editing the catalog, run `python leitura.py` to regenerate the dataset and retrain the model.

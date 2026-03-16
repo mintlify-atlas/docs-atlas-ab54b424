@@ -1,0 +1,175 @@
+---
+title: "Differential suggestions"
+description: "How HealthIA generates and ranks probable condition suggestions with confidence scores."
+---
+
+HealthIA uses a scikit-learn pipeline (TF-IDF + XGBoost) to assign a probability to every condition in the disease catalog for a given input. It then filters and returns the top-ranked suggestions as differential hypotheses.
+
+<Warning>
+  Suggestions are educational hypotheses only. They do not constitute a medical diagnosis and should not be used to make clinical decisions without professional evaluation.
+</Warning>
+
+## How predictions are generated
+
+<Steps>
+  <Step title="Build model input">
+    The symptom text and any patient context are composed into a single string by `_compose_model_input`. See [Patient context](/features/patient-context) for details.
+  </Step>
+  <Step title="Normalize text">
+    The combined input is normalized by `SymptomTextPreprocessor`. See [Symptom analysis](/features/symptom-analysis) for details.
+  </Step>
+  <Step title="TF-IDF feature extraction">
+    The normalized string is passed through the `features` step of the pipeline, which produces a sparse TF-IDF feature vector. The number of non-zero features (`nnz`) is recorded for the minimum-signal check.
+  </Step>
+  <Step title="Probability prediction">
+    `pipeline.predict_proba` returns a probability distribution over all known conditions. Probabilities sum to 1.0.
+  </Step>
+  <Step title="Rank and slice">
+    Conditions are sorted by descending probability and the top `top_n` are selected (default 5, maximum 5).
+  </Step>
+  <Step title="Enrich with catalog metadata">
+    Each prediction is enriched with `domain`, `severity`, and `is_emergency` from the disease catalog.
+  </Step>
+  <Step title="Apply quality filters">
+    Predictions that fail either quality threshold are suppressed and the full list is replaced with an empty array.
+  </Step>
+</Steps>
+
+## Quality thresholds
+
+Two constants in `src/config.py` gate whether predictions are returned:
+
+| Constant | Value | Effect |
+|---|---|---|
+| `MIN_CONFIDENCE` | `0.18` | Top prediction confidence must be ≥ 0.18 |
+| `MIN_NONZERO_FEATURES` | `2` | Input must activate at least 2 TF-IDF features |
+
+If either condition fails, `top_predictions` is returned as an empty list and `warning` is set to `"Informações insuficientes para sugestão confiável"`.
+
+```python predictor.py
+if (
+    not predictions
+    or predictions[0]["confidence"] < MIN_CONFIDENCE
+    or nonzero_features < MIN_NONZERO_FEATURES
+):
+    warning = LOW_CONFIDENCE_MESSAGE
+    predictions = []
+```
+
+<Note>
+  `MIN_NONZERO_FEATURES = 2` means the input must match at least two distinct terms in the TF-IDF vocabulary. Single-word inputs that pass `is_meaningful_input` can still be suppressed here if only one vocabulary feature fires.
+</Note>
+
+## The top_n parameter
+
+`top_n` controls how many predictions are returned. It is accepted by both the POST body and GET query string.
+
+| Parameter | Type | Default | Range |
+|---|---|---|---|
+| `top_n` | integer | `5` | 1–5 |
+
+The value is capped at 5 by the API validator (`le=5`). Requesting `top_n=1` returns only the single most probable condition.
+
+## Prediction object structure
+
+Each item in `top_predictions` contains:
+
+```json sample response
+{
+  "top_predictions": [
+    {
+      "disease": "gripe",
+      "confidence": 0.7231,
+      "domain": "infeccioso",
+      "severity": "leve",
+      "is_emergency": false
+    },
+    {
+      "disease": "covid_19",
+      "confidence": 0.1843,
+      "domain": "infeccioso",
+      "severity": "moderado",
+      "is_emergency": false
+    }
+  ],
+  "warning": null,
+  "disclaimer": "Projeto educacional. Esta ferramenta sugere hipóteses de estudo e não substitui avaliação médica profissional."
+}
+```
+
+<AccordionGroup>
+  <Accordion title="disease">
+    The condition's slug identifier from the disease catalog (e.g., `"gripe"`, `"covid_19"`, `"infarto_agudo"`). The frontend formats this with `formatDiagnosisLabel`, which converts underscores to spaces and applies title casing.
+  </Accordion>
+  <Accordion title="confidence">
+    A float between 0 and 1 representing the model's predicted probability for this condition. Rounded to 4 decimal places. Only present when above `MIN_CONFIDENCE` (0.18) for the top result.
+  </Accordion>
+  <Accordion title="domain">
+    The medical domain of the condition (e.g., `"infeccioso"`, `"cardiovascular"`, `"neurologico"`). Sourced from the disease catalog. May be `null` if not defined for a condition.
+  </Accordion>
+  <Accordion title="severity">
+    A severity label for the condition (e.g., `"leve"`, `"moderado"`, `"grave"`). Sourced from the disease catalog. May be `null`.
+  </Accordion>
+  <Accordion title="is_emergency">
+    A boolean flag from the disease catalog indicating whether the condition may require urgent care. Drives the emergency warning logic described below.
+  </Accordion>
+</AccordionGroup>
+
+## Emergency detection
+
+If the top prediction is marked as an emergency **and** its confidence is at least 0.6, the `warning` field in the response is set to an urgent message:
+
+```python predictor.py
+elif predictions[0]["is_emergency"] and predictions[0]["confidence"] >= 0.6:
+    warning = (
+        "Foram encontradas hipóteses potencialmente urgentes. "
+        "Procure avaliação profissional imediata se houver piora clínica."
+    )
+```
+
+This warning is distinct from the low-confidence warning. It is shown in the `PredictionResult` UI as an amber alert banner above the results.
+
+<Warning>
+  The emergency flag is a catalog attribute, not a real-time clinical assessment. A high-confidence emergency prediction should prompt you to seek professional care, but it does not confirm an emergency.
+</Warning>
+
+## The PredictionResult UI component
+
+The `PredictionResult` component (`frontend/src/components/PredictionResult.tsx`) renders the API response:
+
+- **Warning banner** — displayed in amber when `warning` is non-null (covers both low-confidence and emergency warnings).
+- **Top explanation** — shown as a branded panel above the prediction list when `topDiagnosisExplanation` is present.
+- **Primary reading** — the top condition(s) from `diagnosis` are displayed prominently in a gradient card.
+- **Symptom tags** — the analyzed symptom list is shown alongside any patient context summary.
+- **Prediction ranking** — each item in `top_predictions` renders as a card with the condition name, domain, severity, emergency indicator, confidence percentage, and a visual confidence bar.
+- **Low-signal state** — when `top_predictions` is empty, a dashed placeholder explains that confidence was insufficient rather than showing an empty list.
+- **Disclaimer** — the API's `disclaimer` string and a `MedicalDisclaimer` component are always rendered at the bottom.
+
+## Full response structure
+
+```json full response
+{
+  "input_text": "febre dor de cabeca cansaco",
+  "normalized_text": "febre dor_cabeca fadiga",
+  "top_predictions": [
+    {
+      "disease": "gripe",
+      "confidence": 0.7231,
+      "domain": "infeccioso",
+      "severity": "leve",
+      "is_emergency": false
+    },
+    {
+      "disease": "covid_19",
+      "confidence": 0.1843,
+      "domain": "infeccioso",
+      "severity": "moderado",
+      "is_emergency": false
+    }
+  ],
+  "warning": null,
+  "top_diagnosis_explanation": "Sugerido pela presença de febre e dor de cabeça e fadiga, padrão frequentemente associado a gripe.",
+  "patient_context": null,
+  "disclaimer": "Projeto educacional. Esta ferramenta sugere hipóteses de estudo e não substitui avaliação médica profissional."
+}
+```

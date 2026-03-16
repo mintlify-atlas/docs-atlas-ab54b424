@@ -1,0 +1,133 @@
+---
+title: "Architecture overview"
+description: "High-level overview of HealthIA's full-stack architecture — backend, frontend, and ML pipeline."
+---
+
+HealthIA is a full-stack AI application for educational symptom triage. It combines a **FastAPI** backend running a classical ML pipeline with a **React/TypeScript** frontend. There is no server-side persistence — all user history is stored exclusively in the browser.
+
+## System components
+
+<CardGroup cols={3}>
+  <Card title="Frontend" icon="monitor">
+    React + TypeScript SPA built with Vite. Sends symptoms and optional patient context to the backend, renders ranked predictions, and persists history in `localStorage`.
+  </Card>
+  <Card title="Backend" icon="server">
+    FastAPI application that exposes a `/predict/` endpoint. Handles CORS, validates requests with Pydantic, and delegates inference to the ML pipeline.
+  </Card>
+  <Card title="ML pipeline" icon="cpu">
+    Scikit-learn `Pipeline` with a text normalizer, dual TF-IDF feature extraction, chi-squared feature selection, and a Logistic Regression classifier. Serialized to disk with joblib.
+  </Card>
+</CardGroup>
+
+## Data flow
+
+```
+User browser
+  │
+  │  POST /predict/
+  │  { sintomas, top_n, patient_context }
+  ▼
+FastAPI (main.py)
+  │  CORS middleware
+  │  Pydantic validation
+  ▼
+sintomasAPI.py router
+  │  PatientContextPayload → PatientContext domain object
+  ▼
+HealthIAPredictor.predict()
+  │  1. _normalize_context()   — sanitize/validate patient fields
+  │  2. _compose_model_input() — append context tokens to symptom text
+  │  3. SymptomTextPreprocessor.normalize_text()
+  │  4. pipeline.predict_proba() — TF-IDF → SelectKBest → LogisticRegression
+  │  5. Threshold checks (MIN_CONFIDENCE, MIN_NONZERO_FEATURES)
+  │  6. Catalog enrichment (domain, severity, is_emergency)
+  │  7. _build_top_explanation()
+  ▼
+PredictionResult
+  │  { input_text, normalized_text, top_predictions,
+  │    warning, disclaimer, patient_context,
+  │    top_diagnosis_explanation }
+  ▼
+Frontend normalizePredictionResponse()
+  │  type-safe normalization layer
+  ▼
+UI components
+  PredictionResult, HistoryPanel, MedicalDisclaimer
+```
+
+## Key design decisions
+
+### No server-side persistence
+
+Patient data never leaves the browser in a stored form. The backend processes each request statelessly and returns results immediately. The frontend persists history in `localStorage` under the key `healthia-history`, capped at ten entries.
+
+### Modular ML pipeline
+
+The Scikit-learn `Pipeline` object chains normalization, feature extraction, feature selection, and classification as named steps. This makes it straightforward to swap any individual step — for example, replacing the classifier — without touching the rest of the pipeline or the inference code.
+
+### Backward-compatible API
+
+The `PredictResponse` type in the frontend includes legacy fields (`sintomas`, `diagnostico_previsto`) alongside the current fields. The normalization layer in `api.ts` transparently handles both, so the frontend continues to work if the backend version varies across deployments.
+
+### Context augmentation without retraining
+
+Patient context (age, sex, comorbidities, etc.) is serialized into a natural-language suffix and appended to the symptom text at inference time. The model never sees raw structured fields — it sees tokens like `idade 45 anos`, `faixa adulto`, `sexo feminino`. This means context awareness is added for free, with no model changes required.
+
+### Lightweight dependency footprint
+
+The backend runtime depends only on `fastapi`, `uvicorn`, `pandas`, `numpy`, `scikit-learn`, and `joblib`. There is no database, no message queue, and no external ML serving framework.
+
+## Directory structure
+
+```
+/
+├── HEALTHIA/                  # Backend
+│   ├── main.py                # FastAPI app, CORS, router registration
+│   ├── api/
+│   │   └── sintomasAPI.py     # Pydantic models, route handlers
+│   ├── src/
+│   │   ├── config.py          # Path constants, thresholds
+│   │   ├── data_loading.py    # CSV and JSON loaders
+│   │   ├── inference/
+│   │   │   └── predictor.py   # HealthIAPredictor, PatientContext
+│   │   ├── preprocessing/
+│   │   │   └── text.py        # SymptomTextPreprocessor
+│   │   ├── training/
+│   │   │   ├── train.py       # Pipeline construction, training loop
+│   │   │   └── dataset_generator.py
+│   │   └── evaluation/
+│   │       └── report.py      # Metrics loader and formatter
+│   ├── data/
+│   │   ├── disease_catalog.json
+│   │   └── symptom_cases.csv
+│   └── models/
+│       ├── healthia_pipeline.joblib
+│       ├── evaluation_metrics.json
+│       └── training_summary.md
+└── frontend/                  # React SPA
+    ├── src/
+    │   ├── App.tsx
+    │   ├── pages/
+    │   │   └── HomePage.tsx
+    │   ├── components/
+    │   ├── services/
+    │   │   └── api.ts
+    │   ├── hooks/
+    │   ├── types/
+    │   └── utils/
+    └── vite.config.ts
+```
+
+## Related pages
+
+<CardGroup cols={3}>
+  <Card title="Backend architecture" href="/architecture/backend">
+    FastAPI application structure, CORS configuration, and endpoint reference.
+  </Card>
+  <Card title="Frontend architecture" href="/architecture/frontend">
+    React component tree, service layer, and custom hooks.
+  </Card>
+  <Card title="ML pipeline" href="/architecture/ml-pipeline">
+    TF-IDF pipeline, training loop, inference thresholds, and model serialization.
+  </Card>
+</CardGroup>

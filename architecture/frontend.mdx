@@ -1,0 +1,227 @@
+---
+title: 'Frontend architecture'
+description: 'React + TypeScript application structure, components, services, and state management.'
+---
+
+The HealthIA frontend is a single-page application built with **React**, **TypeScript**, **Vite**, and **Tailwind CSS**. It communicates with the FastAPI backend through a typed service layer and stores diagnosis history locally in the browser — no user data is sent to any persistence layer.
+
+## Application entry point
+
+`App.tsx` wraps the entire application in an `ErrorBoundary` and renders the single page:
+
+```tsx App.tsx
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { HomePage } from '@/pages/HomePage';
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <HomePage />
+    </ErrorBoundary>
+  );
+}
+```
+
+There is intentionally only one route. Navigation between states (symptom input, results, history) is handled through local component state on `HomePage`.
+
+## Build tooling
+
+```ts vite.config.ts
+export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
+  server: {
+    port: 5173,
+  },
+});
+```
+
+The `@` alias maps to `./src`, so all internal imports use `@/components/...`, `@/hooks/...`, etc. The dev server runs on port 5173, which matches the hardcoded CORS defaults in `main.py`.
+
+To start development:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+## Directory structure
+
+```
+frontend/src/
+├── App.tsx
+├── pages/
+│   └── HomePage.tsx           # Single application page
+├── components/
+│   ├── SymptomInput.tsx        # Free-text symptom entry
+│   ├── PatientContextPanel.tsx # Collapsible context form
+│   ├── PredictionResult.tsx    # Ranked prediction display
+│   ├── HistoryPanel.tsx        # Past analyses list
+│   ├── MedicalDisclaimer.tsx   # Educational disclaimer banner
+│   ├── Header.tsx              # App header with navigation
+│   ├── ApiStatusBadge.tsx      # Live API connectivity indicator
+│   ├── ThemeToggle.tsx         # Light/dark theme switcher
+│   ├── ErrorBoundary.tsx       # React error boundary wrapper
+│   └── ui/                    # Primitive UI components
+├── services/
+│   └── api.ts                 # HTTP client and response normalizer
+├── hooks/
+│   ├── useDiagnosisHistory.ts  # localStorage history management
+│   └── useTheme.ts             # Theme persistence
+├── types/
+│   ├── api.ts                 # API request/response types
+│   └── history.ts             # History item type
+├── constants/
+└── utils/
+```
+
+## Components
+
+| Component | Responsibility |
+|-----------|---------------|
+| `SymptomInput` | Free-text input for symptom descriptions. Passes the raw string to the API service. |
+| `PatientContextPanel` | Collapsible form for age, sex, pregnancy status, comorbidities, medications, recent conditions, recent surgeries, and lifestyle notes. |
+| `PredictionResult` | Displays the ranked list of predicted conditions with confidence scores, domain, severity badges, emergency flag, and the top-diagnosis explanation. |
+| `HistoryPanel` | Lists past analyses read from `localStorage`. Each entry can be re-examined. |
+| `MedicalDisclaimer` | Renders the educational disclaimer text returned by the API (`DISCLAIMER` constant). |
+| `Header` | Application header. Contains the `ApiStatusBadge` and `ThemeToggle`. |
+| `ApiStatusBadge` | Calls `GET /` on mount and displays a live indicator of backend connectivity. |
+| `ThemeToggle` | Wraps the `useTheme` hook and renders a toggle button. |
+| `ErrorBoundary` | Catches uncaught React render errors and displays a fallback UI instead of a blank screen. |
+
+## Service layer
+
+`services/api.ts` is the single point of contact with the backend. It exports one object:
+
+```ts services/api.ts
+export const api = {
+  baseUrl: API_BASE_URL,
+  getWelcome: () => request<WelcomeResponse>('/'),
+  predictSymptoms: async (symptoms, patientContext?, topN = 5) => { ... },
+  isApiError: (error): error is ApiError => error instanceof ApiError,
+};
+```
+
+The base URL is read from the `VITE_API_BASE_URL` environment variable and defaults to `http://127.0.0.1:8000`:
+
+```ts services/api.ts
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '');
+```
+
+### `predictSymptoms`
+
+Sends a `POST /predict/` request with a JSON body. The `patient_context` field is passed through `normalizePatientContext` before serialization, which strips empty arrays, null values, and unknown sex before sending:
+
+```ts services/api.ts
+predictSymptoms: async (symptoms, patientContext?, topN = 5) => {
+  const payload = await request<PredictResponse>('/predict/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sintomas: symptoms.join(', '),
+      top_n: topN,
+      patient_context: normalizePatientContext(patientContext) ?? undefined,
+    }),
+  });
+
+  return normalizePredictionResponse(payload);
+},
+```
+
+### Response normalization
+
+`normalizePredictionResponse` converts the raw `PredictResponse` into the `NormalizedPrediction` shape used by the UI. It also handles legacy API fields (`sintomas`, `diagnostico_previsto`) for backward compatibility:
+
+```ts services/api.ts
+const legacySymptoms = toSafeStringArray(payload?.sintomas);
+const symptoms = legacySymptoms.length > 0 ? legacySymptoms : tokenizeSymptoms(inputText);
+const diagnosis =
+  diagnosisFromPredictions.length > 0
+    ? diagnosisFromPredictions
+    : toSafeStringArray(payload?.diagnostico_previsto);
+```
+
+### Error handling
+
+All HTTP errors are wrapped in an `ApiError` class that exposes `status` and `details`. Components can check `api.isApiError(err)` to distinguish network/API failures from unexpected exceptions.
+
+## Custom hooks
+
+### `useDiagnosisHistory`
+
+Manages the list of past analyses in `localStorage` under the key `healthia-history`. Maximum 10 entries are kept.
+
+```ts hooks/useDiagnosisHistory.ts
+export function useDiagnosisHistory() {
+  const [history, setHistory] = useState<DiagnosisHistoryItem[]>(readHistory);
+
+  return useMemo(() => ({
+    history,
+    addEntry: (entry: Omit<DiagnosisHistoryItem, 'id'>) => { ... },
+    clearHistory: () => persist([]),
+  }), [history]);
+}
+```
+
+Every item read from storage is passed through `sanitizeHistoryItem`, which validates types and strips invalid fields. Corrupted storage is silently cleared.
+
+### `useTheme`
+
+Persists the active theme (`light` | `dark`) in `localStorage` under the key `healthia-theme`. On first load it reads `prefers-color-scheme` from the browser if no stored preference exists. The active class is toggled on `document.documentElement` so Tailwind's dark-mode utilities apply globally.
+
+```ts hooks/useTheme.ts
+export function useTheme() {
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    window.localStorage.setItem(STORAGE_KEY, theme);
+  }, [theme]);
+
+  return { theme, setTheme, toggleTheme: () => setTheme(c => c === 'dark' ? 'light' : 'dark') };
+}
+```
+
+## Types
+
+### `types/api.ts`
+
+Defines the shapes of all API request and response objects:
+
+| Type | Description |
+|------|-------------|
+| `WelcomeResponse` | Shape returned by `GET /`. |
+| `PatientSex` | Union of `'male' \| 'female' \| 'other' \| 'unknown'`. |
+| `PatientContext` | Optional context fields sent with a prediction request. |
+| `PredictionEntry` | A single disease prediction with confidence, domain, severity, and emergency flag. |
+| `PredictResponse` | Raw response from `POST /predict/`. Includes legacy fields. |
+| `NormalizedPrediction` | Post-normalized shape consumed by UI components. |
+
+### `types/history.ts`
+
+```ts types/history.ts
+export interface DiagnosisHistoryItem {
+  id: string;
+  createdAt: string;
+  symptoms: string[];
+  diagnosis: string[];
+  warning?: string | null;
+  patientContext?: PatientContext | null;
+  topDiagnosisExplanation?: string | null;
+}
+```
+
+## State management
+
+There is no global state library. State flows through:
+
+1. **Component local state** — form values, loading flags, current prediction result.
+2. **Custom hooks** — `useDiagnosisHistory` and `useTheme` each encapsulate their own `useState` and `localStorage` sync.
+3. **Props** — results and handlers are passed down from `HomePage` to child components.
+
+This keeps the architecture simple and avoids introducing a state management dependency.

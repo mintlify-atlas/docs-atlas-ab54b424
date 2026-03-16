@@ -1,0 +1,112 @@
+---
+title: "Backend development"
+description: "Running and developing the FastAPI backend locally."
+---
+
+## Setup
+
+<Steps>
+  <Step title="Navigate to the backend directory">
+    ```bash
+    cd HEALTHIA
+    ```
+  </Step>
+
+  <Step title="Create a virtual environment">
+    <CodeGroup>
+
+    ```bash macOS / Linux
+    python -m venv .venv
+    source .venv/bin/activate
+    ```
+
+    ```powershell Windows
+    python -m venv .venv
+    .venv\Scripts\Activate.ps1
+    ```
+
+    </CodeGroup>
+  </Step>
+
+  <Step title="Install dependencies">
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+    The `requirements.txt` file installs the following packages:
+
+    | Package | Purpose |
+    |---------|---------|
+    | `fastapi` | Web framework and routing |
+    | `uvicorn` | ASGI server |
+    | `pandas` | Dataset handling |
+    | `numpy` | Numerical operations |
+    | `scikit-learn` | ML pipeline (TF-IDF, classifier) |
+    | `joblib` | Model serialization |
+  </Step>
+
+  <Step title="Start the development server">
+    ```bash
+    uvicorn main:app --reload
+    ```
+
+    The `--reload` flag enables hot-reloading — the server restarts automatically when you save changes to source files.
+  </Step>
+</Steps>
+
+## Accessing the API
+
+Once the server is running, the following URLs are available:
+
+| URL | Description |
+|-----|-------------|
+| `http://localhost:8000` | API root |
+| `http://localhost:8000/docs` | Swagger UI — interactive API explorer |
+
+<Tip>
+  Open `http://localhost:8000/docs` to browse all available endpoints and send test requests directly from your browser.
+</Tip>
+
+## Environment variables
+
+CORS origins are configured through environment variables. By default, the server allows requests from `http://localhost:5173` and `http://127.0.0.1:5173`.
+
+| Variable | Description |
+|----------|-------------|
+| `FRONTEND_URL` | Single additional allowed origin (e.g., your deployed frontend URL) |
+| `FRONTEND_URLS` | Comma-separated list of additional allowed origins |
+| `ALLOW_ALL_ORIGINS` | Set to `true` to allow requests from any origin (useful for development; not recommended for production) |
+
+To set an environment variable before starting the server:
+
+<CodeGroup>
+
+```bash macOS / Linux
+export FRONTEND_URL=https://your-frontend.example.com
+uvicorn main:app --reload
+```
+
+```powershell Windows
+$env:FRONTEND_URL = "https://your-frontend.example.com"
+uvicorn main:app --reload
+```
+
+</CodeGroup>
+
+## Model storage
+
+The trained ML model and related artifacts are stored in the `HEALTHIA/models/` directory:
+
+| File | Description |
+|------|-------------|
+| `models/healthia_pipeline.joblib` | Serialized scikit-learn pipeline (TF-IDF + classifier + label encoder) |
+| `models/evaluation_metrics.json` | Accuracy, F1, precision, recall, and cross-validation scores from the last training run |
+| `models/training_summary.md` | Human-readable summary of the last training run |
+
+## First-run behavior
+
+When the server starts, `HealthIAPredictor` checks whether `healthia_pipeline.joblib` exists in the `models/` directory. If the file is missing, the model trains automatically before the server begins accepting requests.
+
+<Note>
+  The first startup takes longer than subsequent starts because the training pipeline generates the dataset, fits the TF-IDF vectorizer, trains the classifier, and runs 5-fold cross-validation. See [Model training](/development/training) for details on what happens during this process.
+</Note>

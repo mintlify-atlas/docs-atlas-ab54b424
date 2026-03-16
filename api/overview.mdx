@@ -1,0 +1,110 @@
+---
+title: "API overview"
+description: "HealthIA REST API v2.0.0 — educational symptom triage via HTTP."
+---
+
+The HealthIA REST API exposes machine-learning-based symptom triage as HTTP endpoints. The API is strictly educational — it suggests hypotheses for study purposes and does not replace professional medical evaluation.
+
+## Base URL
+
+| Environment | Base URL |
+|-------------|----------|
+| Local development | `http://localhost:8000` |
+| Production (Railway) | `https://<your-app>.up.railway.app` |
+
+## API version
+
+Current version: **2.0.0** (set in `FastAPI(version="2.0.0")`)
+
+## Authentication
+
+No authentication is required. All endpoints are publicly accessible.
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Health check — returns a welcome message and mode indicator |
+| `GET` | `/predict/` | Predict probable conditions via query parameters |
+| `POST` | `/predict/` | Predict probable conditions via a structured JSON body |
+
+<Columns cols={2}>
+  <Card title="GET /predict/" icon="magnifying-glass" href="/api/predict-get">
+    Predict from symptom text using URL query parameters. Useful for quick browser-based or curl requests.
+  </Card>
+  <Card title="POST /predict/" icon="paper-plane" href="/api/predict-post">
+    Predict using a structured JSON body. Preferred when sending structured patient context.
+  </Card>
+</Columns>
+
+## Content type
+
+- **GET /predict/**: parameters are passed as URL query strings. No request body.
+- **POST /predict/**: request body must be `application/json`.
+- All responses are `application/json`.
+
+## Swagger UI
+
+An interactive API reference is available at `/docs` (Swagger UI) and `/redoc` (ReDoc) on any running instance.
+
+```
+http://localhost:8000/docs
+```
+
+## Response format
+
+All prediction endpoints return the same envelope. See [PredictionResult model](/api/prediction-result) for the full schema.
+
+```json
+{
+  "input_text": "...",
+  "normalized_text": "...",
+  "top_predictions": [ ... ],
+  "warning": null,
+  "disclaimer": "...",
+  "patient_context": null,
+  "top_diagnosis_explanation": "..."
+}
+```
+
+## Error handling
+
+The API uses FastAPI's built-in request validation. Validation failures return HTTP `422 Unprocessable Entity` with a Pydantic error body.
+
+```json
+{
+  "detail": [
+    {
+      "type": "string_too_short",
+      "loc": ["query", "sintomas"],
+      "msg": "String should have at least 1 character",
+      "input": ""
+    }
+  ]
+}
+```
+
+<Warning>
+The API does not validate medical plausibility of input. Any non-empty string passes request validation, but the model may return a low-confidence warning if the symptom description is not meaningful.
+</Warning>
+
+## CORS policy
+
+Cross-Origin Resource Sharing is configured in `main.py`. The following origins are allowed by default:
+
+- `http://localhost:5173`
+- `http://127.0.0.1:5173`
+- Any `https://*.up.railway.app` origin (via regex)
+
+Additional origins can be injected at runtime via the `FRONTEND_URL` and `FRONTEND_URLS` environment variables. Setting `ALLOW_ALL_ORIGINS=true` disables origin restrictions entirely.
+
+<Note>
+Credentials (`allow_credentials=true`) and all HTTP methods and headers are permitted for all allowed origins.
+</Note>
+
+## Related pages
+
+- [GET /predict/](/api/predict-get)
+- [POST /predict/](/api/predict-post)
+- [PatientContext model](/api/patient-context)
+- [PredictionResult model](/api/prediction-result)
